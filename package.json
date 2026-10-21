@@ -1,0 +1,23 @@
+{
+  "name": "vela",
+  "version": "0.1.0",
+  "description": "Windows selection translator",
+  "type": "module",
+  "scripts": {
+    "start": "vite",
+    "dev": "vite",
+    "build": "vite build",
+    "serve": "vite preview",
+    "tauri": "tauri"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "solid-js": "^1.9.3",
+    "@tauri-apps/api": "^2"
+  },
+  "devDependencies": {
+    "vite": "^8.0.16",
+    "vite-plugin-solid": "^2.11.12",
+    "@tauri-apps/cli": "^2"
+  }
+}

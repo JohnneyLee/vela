@@ -1,0 +1,216 @@
+:root {
+  font-family: "Segoe UI", sans-serif;
+  font-size: 13px;
+  color: #1a1a1a;
+  background: #f3f3f3;
+}
+
+html,
+body,
+#root {
+  margin: 0;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
+button,
+input,
+textarea,
+select {
+  font: inherit;
+}
+
+.panel {
+  box-sizing: border-box;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid #c8c8c8;
+  background: #f3f3f3;
+}
+
+.bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+  height: 32px;
+  padding: 0 8px;
+  background: linear-gradient(#ffffff, #f5f5f5);
+  border-bottom: 1px solid #d4d4d4;
+  user-select: none;
+}
+
+.title {
+  margin-right: auto;
+  font-weight: 600;
+}
+
+button {
+  border: 1px solid #adadad;
+  background: #fff;
+  padding: 2px 10px;
+  border-radius: 0;
+}
+
+button:hover:not(:disabled) {
+  background: #e5f1fb;
+  border-color: #0078d4;
+}
+
+button:disabled {
+  color: #999;
+}
+
+button.close {
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 40px;
+  min-width: 40px;
+  height: 32px;
+  min-height: 32px;
+  margin-right: -8px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  font-size: 18px;
+  line-height: 1;
+}
+
+button.close:hover {
+  background: #e81123;
+  color: #fff;
+  border: none;
+}
+
+.src {
+  box-sizing: border-box;
+  display: block;
+  width: auto;
+  flex: 0 0 auto;
+  min-height: 48px;
+  max-height: 60vh;
+  margin: 8px 8px 0;
+  padding: 8px;
+  resize: none;
+  color: #333;
+  background: #fff;
+  border: 1px solid #d4d4d4;
+  overflow: auto;
+}
+
+.banner {
+  margin: 6px 8px 0;
+  color: #a4262c;
+}
+
+.src-split {
+  flex: 0 0 8px;
+  margin: 0 8px 4px;
+  cursor: ns-resize;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.src-split::before {
+  content: "";
+  width: 36px;
+  height: 3px;
+  border-radius: 2px;
+  background: #c8c8c8;
+}
+
+.src-split:hover::before {
+  background: #0078d4;
+}
+
+.engine {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+  margin: 0 8px 6px;
+}
+
+.engine select,
+.engine input {
+  font: inherit;
+  box-sizing: border-box;
+  height: 24px;
+  margin: 0;
+  padding: 2px 6px;
+  color: #1a1a1a;
+  background: #fff;
+  border: 1px solid #adadad;
+  border-radius: 0;
+}
+
+.engine input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.compare {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 0;
+  min-height: 0;
+  gap: 6px;
+  margin: 0 8px 8px;
+  padding: 0;
+  overflow: hidden;
+  background: transparent;
+  border: none;
+}
+
+.compare .engine {
+  margin: 0;
+}
+
+.compare .result {
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  box-sizing: border-box;
+  padding: 8px;
+  background: #fff;
+  border: 1px solid #d4d4d4;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+}
+
+.empty {
+  margin: 0;
+  color: #444;
+  line-height: 1.5;
+}
+
+.note {
+  margin: 6px 0 0;
+  color: #666;
+  font-size: 12px;
+}
+
+.muted {
+  color: #777;
+}
+
+.err {
+  color: #a4262c;
+  white-space: pre-wrap;
+}
+
+.foot {
+  flex-shrink: 0;
+  height: 22px;
+  padding: 0 8px 6px;
+  color: #666;
+}
