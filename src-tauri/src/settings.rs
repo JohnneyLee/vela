@@ -1,10 +1,12 @@
-//! Local engine choice. API keys live in the encrypted vault, never in this JSON file.
+//! Local engine choice. API keys live in Windows Credential Manager, never in this JSON file.
 //! Translation text is never stored.
 
 use std::fs;
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
+
+use crate::secrets;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -17,10 +19,6 @@ pub struct Settings {
     pub deepl_key: String,
     #[serde(default, skip_serializing)]
     pub deepseek_key: String,
-    #[serde(default)]
-    pub has_deepl_key: bool,
-    #[serde(default)]
-    pub has_deepseek_key: bool,
     #[serde(default = "default_source_height")]
     pub source_height: u32,
     #[serde(default = "default_direction")]
@@ -56,8 +54,6 @@ impl Default for Settings {
             ai_source: default_ai(),
             deepl_key: String::new(),
             deepseek_key: String::new(),
-            has_deepl_key: false,
-            has_deepseek_key: false,
             source_height: default_source_height(),
             direction: default_direction(),
             style: default_style(),
@@ -103,8 +99,8 @@ pub fn load(dir: &Path) -> Settings {
         .unwrap_or_default()
         .normalize();
     let file_had_secret = raw.contains("\"deeplKey\"") || raw.contains("\"deepseekKey\"");
-    settings.deepl_key.clear();
-    settings.deepseek_key.clear();
+    overlay_secret(&mut settings.deepl_key, "deepl");
+    overlay_secret(&mut settings.deepseek_key, "deepseek");
     if file_had_secret {
         let _ = write_file(dir, &settings);
     }
@@ -112,23 +108,19 @@ pub fn load(dir: &Path) -> Settings {
 }
 
 pub fn save(dir: &Path, settings: &Settings) -> Result<(), String> {
-    let existing = load(dir);
-    let mut clean = settings.clone().normalize();
-    clean.deepl_key.clear();
-    clean.deepseek_key.clear();
-    clean.has_deepl_key = existing.has_deepl_key;
-    clean.has_deepseek_key = existing.has_deepseek_key;
+    let clean = settings.clone().normalize();
+    secrets::store("deepl", &clean.deepl_key)?;
+    secrets::store("deepseek", &clean.deepseek_key)?;
     write_file(dir, &clean)
 }
 
-pub fn set_key_present(dir: &Path, name: &str, present: bool) -> Result<(), String> {
-    let mut settings = load(dir);
-    match name {
-        "deepl" => settings.has_deepl_key = present,
-        "deepseek" => settings.has_deepseek_key = present,
-        _ => return Err("不认识的 Key。".into()),
+fn overlay_secret(file_value: &mut String, name: &str) {
+    let stored = secrets::load(name);
+    if stored.is_empty() && !file_value.is_empty() {
+        let _ = secrets::store(name, file_value);
+    } else if !stored.is_empty() {
+        *file_value = stored;
     }
-    write_file(dir, &settings)
 }
 
 fn write_file(dir: &Path, settings: &Settings) -> Result<(), String> {
@@ -146,6 +138,8 @@ mod tests {
 
     #[test]
     fn saved_file_does_not_contain_api_keys() {
+        let previous_deepl = secrets::load("deepl");
+        let previous_deepseek = secrets::load("deepseek");
         let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../.test-settings");
         let _ = fs::remove_dir_all(&dir);
         let settings = Settings {
@@ -153,15 +147,18 @@ mod tests {
             deepseek_key: "deepseek-secret-value".into(),
             ..Settings::default()
         };
-        save(&dir, &settings).unwrap();
-        let raw = fs::read_to_string(dir.join("settings.json")).unwrap();
+        let saved = save(&dir, &settings);
+        let raw = fs::read_to_string(dir.join("settings.json")).unwrap_or_default();
+        let loaded = load(&dir);
+        let _ = secrets::store("deepl", &previous_deepl);
+        let _ = secrets::store("deepseek", &previous_deepseek);
+        let _ = fs::remove_dir_all(&dir);
+        saved.unwrap();
         assert!(!raw.contains("deepl-secret-value"));
         assert!(!raw.contains("deepseek-secret-value"));
         assert!(!raw.contains("\"deeplKey\""));
         assert!(!raw.contains("\"deepseekKey\""));
-        let loaded = load(&dir);
-        assert!(loaded.deepl_key.is_empty());
-        assert!(loaded.deepseek_key.is_empty());
-        let _ = fs::remove_dir_all(&dir);
+        assert_eq!(loaded.deepl_key, "deepl-secret-value");
+        assert_eq!(loaded.deepseek_key, "deepseek-secret-value");
     }
 }

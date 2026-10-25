@@ -23,10 +23,6 @@ tauri-plugin-single-instance = "2"
 tauri-plugin-autostart = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-aes-gcm = "0.10"
-argon2 = "0.5"
-base64 = "0.22"
-zeroize = "1"
 arboard = "3"
 async-trait = "0.1"
 tokio = { version = "1", features = ["macros", "rt", "sync", "time"] }

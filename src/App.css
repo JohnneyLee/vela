@@ -157,6 +157,13 @@ button.close:hover {
   min-width: 0;
 }
 
+.engine .model {
+  flex: 0 0 auto;
+  color: #666;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
 .compare {
   display: flex;
   flex-direction: column;

@@ -3,6 +3,10 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import "./App.css";
 
+function normalizeWhitespace(text) {
+  return text.trim().split(/\s+/).join(" ");
+}
+
 function App() {
   const [source, setSource] = createSignal("");
   const [mtText, setMtText] = createSignal("");
@@ -20,7 +24,6 @@ function App() {
   const [deepseekKey, setDeepseekKey] = createSignal("");
   const [hasDeeplKey, setHasDeeplKey] = createSignal(false);
   const [hasDeepseekKey, setHasDeepseekKey] = createSignal(false);
-  const [masterPassword, setMasterPassword] = createSignal("");
   const [sourceHeight, setSourceHeight] = createSignal(72);
   const [direction, setDirection] = createSignal("auto");
   const [style, setStyle] = createSignal("none");
@@ -50,6 +53,8 @@ function App() {
     return {
       mtSource: mtSource(),
       aiSource: aiSource(),
+      deeplKey: committedDeepl,
+      deepseekKey: committedDeepseek,
       sourceHeight: sourceHeight(),
       direction: direction(),
       style: style(),
@@ -106,13 +111,6 @@ function App() {
       await settingsReady;
       await saveChain.catch(() => {});
       if (isMt ? ticket !== mtGeneration : ticket !== aiGeneration) return;
-      const needsPassword =
-        !isMt && (aiSource() === "deepseek" || aiSource() === "deepl");
-      if (needsPassword && !masterPassword().trim()) {
-        setAiError("请输入主密码。主密码不会保存。");
-        setAiStatus("error");
-        return;
-      }
       const res = await invoke("translate_text", {
         text: trimmed,
         mtSource: mtSource(),
@@ -121,9 +119,7 @@ function App() {
         style: style(),
         direction: direction(),
         ticket,
-        masterPassword: needsPassword ? masterPassword() : "",
       });
-      if (needsPassword) setMasterPassword("");
       if (isMt ? ticket !== mtGeneration : ticket !== aiGeneration) return;
       if (res?.cancelled) return;
       if (res?.directionLabel) setMeta(res.directionLabel);
@@ -183,44 +179,28 @@ function App() {
     apply();
   }
 
-  async function onKeyCommit() {
-    const name = aiSource() === "deepl" ? "deepl" : aiSource() === "deepseek" ? "deepseek" : "";
-    const key = name === "deepl" ? deeplKey().trim() : deepseekKey().trim();
-    if (!name || !key) return;
-    if (key === (name === "deepl" ? committedDeepl : committedDeepseek)) return;
-    if (!masterPassword().trim()) {
-      setAiError("请输入主密码。主密码不会保存。");
-      setAiStatus("error");
-      return;
+  function onKeyCommit() {
+    let changed = false;
+    const nextDeepseek = deepseekKey().trim();
+    const nextDeepl = deeplKey().trim();
+    if (edited.deepseekKey && nextDeepseek && nextDeepseek !== committedDeepseek) {
+      committedDeepseek = nextDeepseek;
+      changed = true;
     }
-    try {
-      await invoke("save_secret", { name, key, password: masterPassword() });
-      if (name === "deepl") {
-        committedDeepl = key;
-        setHasDeeplKey(true);
-        setDeeplKey("");
-      } else {
-        committedDeepseek = key;
-        setHasDeepseekKey(true);
-        setDeepseekKey("");
-      }
-      if (source().trim()) await translateSide("ai", source());
-    } catch (err) {
-      setAiError(String(err));
-      setAiStatus("error");
+    if (edited.deeplKey && nextDeepl && nextDeepl !== committedDeepl) {
+      committedDeepl = nextDeepl;
+      changed = true;
     }
-  }
-
-  function onMasterCommit() {
-    if (!masterPassword().trim()) return;
-    const key = aiSource() === "deepl" ? deeplKey().trim() : deepseekKey().trim();
-    if (key) {
-      onKeyCommit();
-      return;
-    }
-    if (source().trim() && (aiSource() === "deepseek" || aiSource() === "deepl")) {
-      translateSide("ai", source());
-    }
+    if (!changed) return;
+    setHasDeepseekKey(Boolean(committedDeepseek));
+    setHasDeeplKey(Boolean(committedDeepl));
+    setDeepseekKey("");
+    setDeeplKey("");
+    edited.deepseekKey = false;
+    edited.deeplKey = false;
+    saveSettings().then(() => {
+      if (source().trim()) translateSide("ai", source());
+    });
   }
 
   onMount(() => {
@@ -231,8 +211,16 @@ function App() {
         if (!settings) return;
         if (!edited.mtSource) setMtSource(settings.mtSource || "google");
         if (!edited.aiSource) setAiSource(settings.aiSource || "free");
-        if (!edited.deeplKey) setHasDeeplKey(Boolean(settings.hasDeeplKey));
-        if (!edited.deepseekKey) setHasDeepseekKey(Boolean(settings.hasDeepseekKey));
+        if (!edited.deeplKey) {
+          committedDeepl = settings.deeplKey ?? "";
+          setHasDeeplKey(Boolean(committedDeepl));
+          setDeeplKey("");
+        }
+        if (!edited.deepseekKey) {
+          committedDeepseek = settings.deepseekKey ?? "";
+          setHasDeepseekKey(Boolean(committedDeepseek));
+          setDeepseekKey("");
+        }
         if (!edited.sourceHeight && settings.sourceHeight) {
           setSourceHeight(clampSourceHeight(settings.sourceHeight));
         }
@@ -255,7 +243,8 @@ function App() {
       });
 
     listen("selection-captured", (event) => {
-      const text = String(event.payload?.text ?? "");
+      const raw = String(event.payload?.text ?? "");
+      const text = normalizeWhitespace(raw);
       setSource(text);
       queueTranslate(text);
     }).then((unsub) => unsubs.push(unsub));
@@ -447,37 +436,37 @@ function App() {
             <option value="deepseek">DeepSeek</option>
             <option value="deepl">DeepL</option>
           </select>
-          <Show when={aiSource() === "deepseek" || aiSource() === "deepl"}>
+          <Show when={aiSource() === "deepseek"}>
+            <span class="model" title="当前调用的模型">
+              deepseek-flash
+            </span>
             <input
               type="password"
               autocomplete="off"
               placeholder={
-                aiSource() === "deepseek"
-                  ? hasDeepseekKey()
-                    ? "DeepSeek Key 已加密。要更换时再输入"
-                    : "DeepSeek API Key"
-                  : hasDeeplKey()
-                    ? "DeepL Key 已加密。要更换时再输入"
-                    : "DeepL API Key"
+                hasDeepseekKey()
+                  ? "Key 已保存。要更换时再输入"
+                  : "DeepSeek API Key，只保存在本机"
               }
-              value={aiSource() === "deepseek" ? deepseekKey() : deeplKey()}
-              onInput={(event) => {
-                const value = event.currentTarget.value;
-                if (aiSource() === "deepseek") {
-                  onKeyInput("deepseekKey", () => setDeepseekKey(value));
-                } else {
-                  onKeyInput("deeplKey", () => setDeeplKey(value));
-                }
-              }}
+              value={deepseekKey()}
+              onInput={(event) =>
+                onKeyInput("deepseekKey", () => setDeepseekKey(event.currentTarget.value))
+              }
               onBlur={onKeyCommit}
             />
+          </Show>
+          <Show when={aiSource() === "deepl"}>
             <input
               type="password"
               autocomplete="off"
-              placeholder="主密码，只在这次输入，不保存"
-              value={masterPassword()}
-              onInput={(event) => setMasterPassword(event.currentTarget.value)}
-              onBlur={onMasterCommit}
+              placeholder={
+                hasDeeplKey() ? "Key 已保存。要更换时再输入" : "DeepL API Key，只保存在本机"
+              }
+              value={deeplKey()}
+              onInput={(event) =>
+                onKeyInput("deeplKey", () => setDeeplKey(event.currentTarget.value))
+              }
+              onBlur={onKeyCommit}
             />
           </Show>
         </div>

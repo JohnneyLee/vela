@@ -184,6 +184,10 @@ pub async fn translate_ai(
     )
 }
 
+fn normalize_for_translation(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
 async fn mt_column(
     text: &str,
     target: &str,
@@ -191,10 +195,11 @@ async fn mt_column(
     model_dir: &Path,
     on_status: &(dyn Fn(String) + Send + Sync),
 ) -> Column {
+    let text = normalize_for_translation(text);
     match source {
-        "google" => google_column(text, target, model_dir, on_status).await,
-        "mymemory" => mymemory_column(text, target).await,
-        "offline" => offline_column(text, target, model_dir, on_status).await,
+        "google" => google_column(&text, target, model_dir, on_status).await,
+        "mymemory" => mymemory_column(&text, target).await,
+        "offline" => offline_column(&text, target, model_dir, on_status).await,
         _ => failed("不认识的翻译源。"),
     }
 }
@@ -236,7 +241,7 @@ async fn google_column(
 
 async fn deepl_column(text: &str, target: &str, key: &str, style: Option<&str>) -> Column {
     if key.is_empty() {
-        return failed("还没有 DeepL API Key。保存时要输入主密码，主密码不会保存。");
+        return failed("还没有 DeepL API Key。Key 只保存在本机。");
     }
     let url = if key.ends_with(":fx") {
         "https://api-free.deepl.com/v2/translate"
@@ -345,11 +350,11 @@ async fn deepseek_column(
     on_chunk: &(dyn Fn(String) + Send + Sync),
 ) -> Column {
     if key.is_empty() {
-        return failed("还没有 DeepSeek API Key。保存时要输入主密码，主密码不会保存。");
+        return failed("还没有 DeepSeek API Key。Key 只保存在本机。");
     }
     let result = chat_translation(
         "https://api.deepseek.com/chat/completions",
-        "deepseek-chat",
+        "deepseek-flash",
         &translation_prompt(text, target, style),
         Some(key),
         "DeepSeek 没有返回译文。",
@@ -584,6 +589,42 @@ mod tests {
         });
         assert_eq!(acc, "He");
         assert_eq!(seen.lock().unwrap().as_str(), "He");
+    }
+
+    #[test]
+    fn deepseek_uses_a_saved_key_without_a_master_password() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let keys = ProviderKeys {
+            deepl: String::new(),
+            deepseek: String::new(),
+        };
+        let (_text, _service, error) = runtime.block_on(translate_ai(
+            "你好",
+            "en",
+            "deepseek",
+            None,
+            &keys,
+            &|_| {},
+        ));
+        assert!(error.contains("还没有 DeepSeek API Key"), "{error}");
+
+        let keys = ProviderKeys {
+            deepl: String::new(),
+            deepseek: "sk-test-value".into(),
+        };
+        let (_text, _service, error) = runtime.block_on(translate_ai(
+            "你好",
+            "en",
+            "deepseek",
+            None,
+            &keys,
+            &|_| {},
+        ));
+        assert!(!error.contains("还没有 DeepSeek API Key"), "{error}");
+        assert!(!error.contains("主密码"), "{error}");
     }
 }
 

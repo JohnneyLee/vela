@@ -1,5 +1,4 @@
 mod offline;
-mod vault;
 mod picker;
 mod secrets;
 mod selection;
@@ -62,19 +61,6 @@ fn save_settings(app: tauri::AppHandle, settings: settings::Settings) -> Result<
 }
 
 #[tauri::command]
-fn save_secret(
-    app: tauri::AppHandle,
-    name: String,
-    key: String,
-    password: String,
-) -> Result<(), String> {
-    let dir = settings_dir(&app)?;
-    vault::save_key(&dir, &name, &key, &password)?;
-    secrets::discard(&name);
-    settings::set_key_present(&dir, &name, !key.trim().is_empty())
-}
-
-#[tauri::command]
 async fn translate_text(
     app: tauri::AppHandle,
     text: String,
@@ -84,7 +70,6 @@ async fn translate_text(
     style: Option<String>,
     direction: Option<String>,
     ticket: Option<u64>,
-    master_password: Option<String>,
 ) -> Result<TranslateResponse, String> {
     let text = text.trim();
     if text.is_empty() {
@@ -98,17 +83,9 @@ async fn translate_text(
     let style = style.unwrap_or(stored.style.clone());
     let direction = direction.unwrap_or(stored.direction);
     let target = translate::resolve_target(text, &direction);
-    let needs_saved_key = matches!(ai_source.as_str(), "deepseek" | "deepl")
-        && side.as_deref() != Some("mt");
-    let keys = if needs_saved_key {
-        let dir = settings_dir(&app)?;
-        let (deepl, deepseek) = vault::load_keys(&dir, master_password.as_deref().unwrap_or(""))?;
-        translate::ProviderKeys { deepl, deepseek }
-    } else {
-        translate::ProviderKeys {
-            deepl: String::new(),
-            deepseek: String::new(),
-        }
+    let keys = translate::ProviderKeys {
+        deepl: stored.deepl_key,
+        deepseek: stored.deepseek_key,
     };
     let model_dir = settings_dir(&app)
         .unwrap_or_else(|_| std::env::temp_dir().join("Vela"))
@@ -375,7 +352,6 @@ pub fn run() {
             translate_text,
             get_settings,
             save_settings,
-            save_secret,
             dismiss
         ])
         .run(tauri::generate_context!())

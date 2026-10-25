@@ -5,18 +5,13 @@ commands.allow = ["translate_text"]
 
 [[permission]]
 identifier = "allow-get-settings"
-description = "Allows reading the local engine choice. API keys are not included."
+description = "Allows reading the local engine choice and saved API keys."
 commands.allow = ["get_settings"]
 
 [[permission]]
 identifier = "allow-save-settings"
-description = "Allows saving the local engine choice."
+description = "Allows saving the local engine choice and API keys."
 commands.allow = ["save_settings"]
-
-[[permission]]
-identifier = "allow-save-secret"
-description = "Allows sealing an API key with a master password that is not stored."
-commands.allow = ["save_secret"]
 
 [[permission]]
 identifier = "allow-dismiss"
