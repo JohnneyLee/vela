@@ -1,36 +1,70 @@
-//! API keys live in the Windows Credential Manager, not in a file that can be copied or uploaded.
+//! API keys are DPAPI-encrypted (tied to the current user) and written to files
+//! under the app config directory. They are not plaintext and not in the
+//! Credential Manager, so system cleanup tools that wipe Credential Manager
+//! will not lose them. Any key left in Credential Manager by an older build is
+//! migrated into the file on first read and then removed from Credential Manager.
 
-use std::ffi::c_void;
+use std::fs;
+use std::path::{Path, PathBuf};
 
 use windows::core::PCWSTR;
-use windows::Win32::Foundation::FILETIME;
 use windows::Win32::Security::Credentials::{
-    CredDeleteW, CredFree, CredReadW, CredWriteW, CREDENTIALW, CRED_PERSIST_LOCAL_MACHINE,
-    CRED_TYPE_GENERIC,
+    CredDeleteW, CredFree, CredReadW, CRED_TYPE_GENERIC,
 };
 
-pub fn load(name: &str) -> String {
-    let current = read_target(&target_name(name));
-    let legacy = read_target(&legacy_target_name(name));
-    if !legacy.is_empty() {
-        if current.is_empty() {
-            let _ = write_target(&target_name(name), &legacy);
-        }
-        delete_target(&legacy_target_name(name));
+use crate::dpapi;
+
+pub fn load(dir: &Path, name: &str) -> String {
+    if let Some(text) = read_file(dir, name) {
+        return text;
     }
-    if current.is_empty() { legacy } else { current }
+    migrate_credential(dir, name)
 }
 
-pub fn store(name: &str, value: &str) -> Result<(), String> {
+pub fn store(dir: &Path, name: &str, value: &str) -> Result<(), String> {
     let value = value.trim();
+    let path = key_path(dir, name);
     if value.is_empty() {
-        delete_target(&target_name(name));
-        delete_target(&legacy_target_name(name));
+        let _ = fs::remove_file(&path);
         return Ok(());
     }
-    write_target(&target_name(name), value)?;
+    let encrypted = dpapi::protect(value.as_bytes())?;
+    fs::create_dir_all(dir).map_err(|err| err.to_string())?;
+    fs::write(&path, encrypted).map_err(|err| format!("无法保存 Key：{err}"))
+}
+
+pub fn discard(dir: &Path, name: &str) {
+    let _ = fs::remove_file(key_path(dir, name));
+    delete_target(&target_name(name));
     delete_target(&legacy_target_name(name));
-    Ok(())
+}
+
+fn key_path(dir: &Path, name: &str) -> PathBuf {
+    dir.join(format!("{name}.key"))
+}
+
+fn read_file(dir: &Path, name: &str) -> Option<String> {
+    let blob = fs::read(key_path(dir, name)).ok()?;
+    let decrypted = dpapi::unprotect(&blob).ok()?;
+    let text = String::from_utf8_lossy(&decrypted).trim().to_string();
+    (!text.is_empty()).then_some(text)
+}
+
+fn migrate_credential(dir: &Path, name: &str) -> String {
+    let current = read_target(&target_name(name));
+    let legacy = read_target(&legacy_target_name(name));
+    let source = if current.is_empty() { legacy } else { current };
+    if source.is_empty() {
+        return String::new();
+    }
+    if let Ok(encrypted) = dpapi::protect(source.as_bytes()) {
+        if fs::create_dir_all(dir).is_ok() {
+            let _ = fs::write(key_path(dir, name), encrypted);
+        }
+    }
+    delete_target(&target_name(name));
+    delete_target(&legacy_target_name(name));
+    source
 }
 
 fn read_target(target: &str) -> String {
@@ -46,39 +80,14 @@ fn read_target(target: &str) -> String {
             (*cred).CredentialBlobSize as usize,
         );
         let text = String::from_utf8_lossy(blob).trim().to_string();
-        CredFree(cred as *const c_void);
+        CredFree(cred as *const std::ffi::c_void);
         text
     }
-}
-
-fn write_target(target: &str, value: &str) -> Result<(), String> {
-    let mut blob = value.as_bytes().to_vec();
-    let mut target_buf = wide(target);
-    let cred = CREDENTIALW {
-        Flags: Default::default(),
-        Type: CRED_TYPE_GENERIC,
-        TargetName: windows::core::PWSTR(target_buf.as_mut_ptr()),
-        Comment: windows::core::PWSTR::null(),
-        LastWritten: FILETIME::default(),
-        CredentialBlobSize: blob.len() as u32,
-        CredentialBlob: blob.as_mut_ptr(),
-        Persist: CRED_PERSIST_LOCAL_MACHINE,
-        AttributeCount: 0,
-        Attributes: std::ptr::null_mut(),
-        TargetAlias: windows::core::PWSTR::null(),
-        UserName: windows::core::PWSTR::null(),
-    };
-    unsafe { CredWriteW(&cred, 0) }.map_err(|err| format!("无法保存 Key：{err}"))
 }
 
 fn delete_target(target: &str) {
     let target = wide(target);
     let _ = unsafe { CredDeleteW(PCWSTR(target.as_ptr()), CRED_TYPE_GENERIC, None) };
-}
-
-pub fn discard(name: &str) {
-    delete_target(&target_name(name));
-    delete_target(&legacy_target_name(name));
 }
 
 fn target_name(name: &str) -> String {
@@ -98,11 +107,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn credential_roundtrip_uses_a_test_name() {
-        let name = "selftest";
-        store(name, "sample-key").unwrap();
-        assert_eq!(load(name), "sample-key");
-        store(name, "").unwrap();
-        assert!(load(name).is_empty());
+    fn dpapi_file_roundtrip_uses_a_test_name() {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../.test-secrets");
+        let _ = fs::remove_dir_all(&dir);
+        store(&dir, "selftest", "sample-key").unwrap();
+        assert_eq!(load(&dir, "selftest"), "sample-key");
+        let blob = fs::read(dir.join("selftest.key")).unwrap();
+        assert!(!String::from_utf8_lossy(&blob).contains("sample-key"));
+        store(&dir, "selftest", "").unwrap();
+        assert!(load(&dir, "selftest").is_empty());
+        let _ = fs::remove_dir_all(&dir);
     }
 }

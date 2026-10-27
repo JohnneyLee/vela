@@ -180,6 +180,8 @@ function App() {
   }
 
   function onKeyCommit() {
+    const prevDeepseek = committedDeepseek;
+    const prevDeepl = committedDeepl;
     let changed = false;
     const nextDeepseek = deepseekKey().trim();
     const nextDeepl = deeplKey().trim();
@@ -198,9 +200,18 @@ function App() {
     setDeeplKey("");
     edited.deepseekKey = false;
     edited.deeplKey = false;
-    saveSettings().then(() => {
-      if (source().trim()) translateSide("ai", source());
-    });
+    saveSettings()
+      .then(() => {
+        if (source().trim()) translateSide("ai", source());
+      })
+      .catch((err) => {
+        committedDeepseek = prevDeepseek;
+        committedDeepl = prevDeepl;
+        setHasDeepseekKey(Boolean(committedDeepseek));
+        setHasDeeplKey(Boolean(committedDeepl));
+        setAiError("无法保存 Key：" + String(err));
+        setAiStatus("error");
+      });
   }
 
   onMount(() => {

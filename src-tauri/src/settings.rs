@@ -99,8 +99,8 @@ pub fn load(dir: &Path) -> Settings {
         .unwrap_or_default()
         .normalize();
     let file_had_secret = raw.contains("\"deeplKey\"") || raw.contains("\"deepseekKey\"");
-    overlay_secret(&mut settings.deepl_key, "deepl");
-    overlay_secret(&mut settings.deepseek_key, "deepseek");
+    overlay_secret(dir, &mut settings.deepl_key, "deepl");
+    overlay_secret(dir, &mut settings.deepseek_key, "deepseek");
     if file_had_secret {
         let _ = write_file(dir, &settings);
     }
@@ -109,15 +109,15 @@ pub fn load(dir: &Path) -> Settings {
 
 pub fn save(dir: &Path, settings: &Settings) -> Result<(), String> {
     let clean = settings.clone().normalize();
-    secrets::store("deepl", &clean.deepl_key)?;
-    secrets::store("deepseek", &clean.deepseek_key)?;
+    secrets::store(dir, "deepl", &clean.deepl_key)?;
+    secrets::store(dir, "deepseek", &clean.deepseek_key)?;
     write_file(dir, &clean)
 }
 
-fn overlay_secret(file_value: &mut String, name: &str) {
-    let stored = secrets::load(name);
+fn overlay_secret(dir: &Path, file_value: &mut String, name: &str) {
+    let stored = secrets::load(dir, name);
     if stored.is_empty() && !file_value.is_empty() {
-        let _ = secrets::store(name, file_value);
+        let _ = secrets::store(dir, name, file_value);
     } else if !stored.is_empty() {
         *file_value = stored;
     }
@@ -138,8 +138,6 @@ mod tests {
 
     #[test]
     fn saved_file_does_not_contain_api_keys() {
-        let previous_deepl = secrets::load("deepl");
-        let previous_deepseek = secrets::load("deepseek");
         let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../.test-settings");
         let _ = fs::remove_dir_all(&dir);
         let settings = Settings {
@@ -150,8 +148,6 @@ mod tests {
         let saved = save(&dir, &settings);
         let raw = fs::read_to_string(dir.join("settings.json")).unwrap_or_default();
         let loaded = load(&dir);
-        let _ = secrets::store("deepl", &previous_deepl);
-        let _ = secrets::store("deepseek", &previous_deepseek);
         let _ = fs::remove_dir_all(&dir);
         saved.unwrap();
         assert!(!raw.contains("deepl-secret-value"));

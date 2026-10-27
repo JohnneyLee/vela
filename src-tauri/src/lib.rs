@@ -1,3 +1,4 @@
+mod dpapi;
 mod offline;
 mod picker;
 mod secrets;
