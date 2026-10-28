@@ -375,6 +375,7 @@ fn dismiss_shortcut() -> Shortcut {
 
 fn hide_result(app: &tauri::AppHandle) {
     translate::cancel_ai();
+    speech::stop();
     if let Some(window) = app.get_webview_window("panel") {
         let _ = window.hide();
     }
@@ -467,6 +468,11 @@ async fn speak(text: String, lang: Option<String>) -> Result<(), String> {
         Ok(res) => res,
         Err(err) => Err(format!("朗读线程出错：{err}")),
     }
+}
+
+#[tauri::command]
+fn stop_speak() {
+    speech::stop();
 }
 
 #[tauri::command]
@@ -779,6 +785,7 @@ pub fn run() {
             set_autostart,
             dismiss,
             speak,
+            stop_speak,
             replace_text,
             undo_text,
             copy_text,

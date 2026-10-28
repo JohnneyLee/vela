@@ -105,6 +105,7 @@ function App() {
   const [fromSelection, setFromSelection] = createSignal(false);
   const [editable, setEditable] = createSignal(false);
   const [actionMsg, setActionMsg] = createSignal("");
+  const [speaking, setSpeaking] = createSignal(false);
   const [polishLevel, setPolishLevel] = createSignal("standard");
   const [diffExplanation, setDiffExplanation] = createSignal("");
   // UI state
@@ -173,6 +174,7 @@ function App() {
     setAiStatus("idle");
     setFromSelection(false);
     setActionMsg("");
+    setSpeaking(false);
     setDiffExplanation("");
     setJustReplaced(false);
     setAiGenerating(false);
@@ -325,9 +327,9 @@ function App() {
     const text = source().trim();
     if (!text) return;
     if (action === "speak") {
+      const result = resultToSpeak();
       setMode("speak");
-      setActionMsg("");
-      invoke("speak", { text }).catch((err) => setActionMsg(String(err)));
+      toggleSpeak(result || text);
       return;
     }
     setMode(action);
@@ -417,7 +419,33 @@ function App() {
   function speakSource() {
     const text = source().trim();
     if (!text) return;
-    invoke("speak", { text }).catch((err) => setActionMsg(String(err)));
+    toggleSpeak(text);
+  }
+
+  function toggleSpeak(text) {
+    if (speaking()) {
+      setSpeaking(false);
+      invoke("stop_speak");
+      return;
+    }
+    setSpeaking(true);
+    setActionMsg("");
+    invoke("speak", { text })
+      .catch((err) => setActionMsg(String(err)))
+      .finally(() => setSpeaking(false));
+  }
+
+  // 朗读主按钮读「结果」：润色/解释读 AI 结果，翻译读当前主结果；
+  // 原文由原文行的小喇叭朗读。
+  function resultToSpeak() {
+    if (mode() === "explain" || mode() === "polish") return aiText();
+    if (mode() === "translate") {
+      const p = primary();
+      if (p === "ai") return aiText() || mtText();
+      if (p === "mt") return mtText() || aiText();
+      return aiText() || mtText();
+    }
+    return "";
   }
 
   function onSetting(flag, apply) {
@@ -750,14 +778,15 @@ function App() {
           <button
             type="button"
             class="mini-speak"
+            classList={{ active: speaking() }}
             onClick={(e) => {
               e.stopPropagation();
               speakSource();
             }}
-            aria-label="朗读原文"
-            title="朗读原文"
+            aria-label={speaking() ? "停止朗读" : "朗读原文"}
+            title={speaking() ? "停止朗读" : "朗读原文"}
           >
-            🔊
+            {speaking() ? "⏹" : "🔊"}
           </button>
         </div>
       </Show>

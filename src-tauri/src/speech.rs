@@ -4,6 +4,7 @@
 
 use std::os::windows::process::CommandExt;
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
@@ -11,6 +12,17 @@ const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 /// PID of the in-flight read-aloud process. Held so a second tap can stop the
 /// previous voice before starting a new one, instead of both talking at once.
 static PLAYER_PID: Mutex<Option<u32>> = Mutex::new(None);
+
+/// Set when the user (or close/Esc) asked to stop. The read-aloud then returns
+/// Ok silently instead of reporting a fake error for its killed process.
+static STOPPED: AtomicBool = AtomicBool::new(false);
+
+/// Stop the currently-playing voice. Called by the panel's stop button, the
+/// close/Esc path, and before a new read-aloud starts.
+pub fn stop() {
+    STOPPED.store(true, Ordering::SeqCst);
+    stop_previous();
+}
 
 /// Kill the currently-playing voice (if any) before starting a new one.
 fn stop_previous() {
@@ -33,6 +45,7 @@ pub fn speak_with_lang(text: &str, lang: &str) -> Result<(), String> {
     if text.is_empty() {
         return Err("没有可朗读的文字。".into());
     }
+    STOPPED.store(false, Ordering::SeqCst);
     let lang = match lang {
         "zh" | "en" | "ja" => lang,
         _ => detect_voice_lang(text),
@@ -58,7 +71,8 @@ pub fn speak_with_lang(text: &str, lang: &str) -> Result<(), String> {
            if ($voices.Count -eq 0) {{ exit 2 }}; \
            $v = $voices | Where-Object {{ $_.VoiceInfo.Culture.Name -like '{lang}*' }} | Select-Object -First 1; \
            if ($v) {{ $s.SelectVoice($v.VoiceInfo.Name) }}; \
-           $s.Speak($t) \
+           $parts = $t -split '(?<=[。！？.!?；;\\n])' | Where-Object {{ $_.Trim() -ne '' }}; \
+           foreach ($p in $parts) {{ $s.Speak($p) }} \
          }} catch {{ \
            [Console]::Error.WriteLine($_.Exception.Message); \
            exit 1 \
@@ -101,6 +115,12 @@ pub fn speak_with_lang(text: &str, lang: &str) -> Result<(), String> {
 
     // The temp file is deleted here as a fallback (the script no longer deletes it).
     let _ = std::fs::remove_file(&path);
+
+    // User asked to stop: the killed process exits non-zero, but that is not a
+    // failure to report.
+    if STOPPED.load(Ordering::SeqCst) {
+        return Ok(());
+    }
 
     if !output.status.success() {
         // Exit code 2 = no installed voices at all.
