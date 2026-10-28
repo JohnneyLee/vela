@@ -51,3 +51,97 @@
   align-items: center;
   pointer-events: none;
 }
+
+/* 结果层工具栏：钉住 / 关闭。 */
+.ocr-toolbar {
+  position: fixed;
+  top: 8px;
+  right: 8px;
+  display: flex;
+  gap: 6px;
+  z-index: 10;
+}
+
+.ocr-tool-btn {
+  background: rgba(20, 20, 24, 0.78);
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  padding: 5px 10px;
+  font-size: 12px;
+  cursor: pointer;
+  line-height: 1;
+}
+
+.ocr-tool-btn:hover {
+  background: rgba(47, 91, 234, 0.85);
+}
+
+/* 钉住窗口：内容 + 悬浮工具栏。 */
+.pinned-root {
+  position: fixed;
+  inset: 0;
+  overflow: hidden;
+  background: transparent;
+}
+
+.pinned-stage {
+  position: absolute;
+  top: 0;
+  left: 0;
+}
+
+.pinned-toolbar {
+  position: fixed;
+  bottom: 8px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: rgba(20, 20, 24, 0.82);
+  border-radius: 8px;
+  padding: 4px 8px;
+  z-index: 10;
+}
+
+.pinned-drag {
+  flex: 1;
+  min-width: 48px;
+  height: 22px;
+  cursor: move;
+}
+
+.pinned-btn {
+  background: transparent;
+  color: #fff;
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  border-radius: 5px;
+  padding: 3px 8px;
+  font-size: 12px;
+  cursor: pointer;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.pinned-btn:hover {
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.pinned-btn.on {
+  background: rgba(47, 91, 234, 0.85);
+  border-color: transparent;
+}
+
+.pinned-scale {
+  color: #fff;
+  font-size: 11px;
+  min-width: 34px;
+  text-align: center;
+}
+
+.pinned-opacity {
+  width: 80px;
+  accent-color: #2f5bea;
+  cursor: pointer;
+}

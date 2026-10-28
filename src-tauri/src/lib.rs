@@ -15,15 +15,17 @@ mod translate;
 mod windows;
 mod writeback;
 
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Mutex, OnceLock};
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{LazyLock, Mutex, OnceLock};
 
 use crate::ocr::Recognizer;
 use serde::Serialize;
 use tauri::{
     menu::{CheckMenuItem, Menu, MenuItem},
     tray::{MouseButton, TrayIconBuilder, TrayIconEvent},
-    Emitter, Manager, PhysicalPosition, PhysicalSize, WindowEvent,
+    Emitter, Manager, PhysicalPosition, PhysicalSize, WebviewUrl, WebviewWindowBuilder,
+    WindowEvent,
 };
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
@@ -44,6 +46,17 @@ static RESULT_IMAGE: Mutex<Option<screenshot::ScreenCapture>> = Mutex::new(None)
 
 /// 截图翻译的渲染块（O5），供 overlay 结果模式读取，关闭即清除。
 static OCR_BLOCKS: Mutex<Option<Vec<screenshot_flow::RenderBlock>>> = Mutex::new(None);
+
+/// 已钉住的截图翻译结果（O6）。每钉住一次生成一个独立窗口，可并存多个。
+static PINNED: LazyLock<Mutex<HashMap<u64, PinnedResult>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+static PINNED_SEQ: AtomicU64 = AtomicU64::new(1);
+
+/// 一个钉住的截图翻译结果，只存内存，关闭即清除。
+struct PinnedResult {
+    cap: screenshot::ScreenCapture,
+    blocks: Vec<screenshot_flow::RenderBlock>,
+}
 
 fn default_clipboard_shortcut() -> Shortcut {
     Shortcut::new(
@@ -273,6 +286,81 @@ fn get_ocr_result() -> Result<OcrResultPayload, String> {
         b64: screenshot::encode_base64(&cap.pixels),
         blocks,
     })
+}
+
+/// 钉住当前结果：把结果转移到独立窗口，overlay 回到待命状态（O6）。
+/// 返回新窗口的 id；前端按 `#/pinned/<id>` 渲染。
+#[tauri::command]
+async fn pin_result(app: tauri::AppHandle) -> Result<u64, String> {
+    let cap = RESULT_IMAGE
+        .lock()
+        .map_err(|e| e.to_string())?
+        .take()
+        .ok_or("没有可钉住的结果。")?;
+    let blocks = OCR_BLOCKS
+        .lock()
+        .map_err(|e| e.to_string())?
+        .take()
+        .unwrap_or_default();
+
+    let id = PINNED_SEQ.fetch_add(1, Ordering::SeqCst);
+    PINNED
+        .lock()
+        .map_err(|e| e.to_string())?
+        .insert(id, PinnedResult { cap, blocks });
+
+    let window = WebviewWindowBuilder::new(
+        &app,
+        format!("pinned-{id}"),
+        WebviewUrl::App(format!("index.html#/pinned/{id}").into()),
+    )
+    .title("Vela 截图")
+    .transparent(true)
+    .decorations(false)
+    .always_on_top(true)
+    .skip_taskbar(true)
+    .resizable(true)
+    .build()
+    .map_err(|e| e.to_string())?;
+
+    // 定位到原结果的位置与大小。
+    let pinned = PINNED.lock().map_err(|e| e.to_string())?;
+    if let Some(result) = pinned.get(&id) {
+        let _ = window.set_position(PhysicalPosition::new(result.cap.origin_x, result.cap.origin_y));
+        let _ = window.set_size(PhysicalSize::new(result.cap.width as u32, result.cap.height as u32));
+    }
+    let _ = window.show();
+    let _ = window.set_focus();
+
+    // 关闭 overlay（回到待命），不销毁钉住的结果。
+    close_overlay(&app);
+    Ok(id)
+}
+
+/// 读取一个钉住的结果供前端渲染。
+#[tauri::command]
+fn get_pinned_result(id: u64) -> Result<OcrResultPayload, String> {
+    let pinned = PINNED.lock().map_err(|e| e.to_string())?;
+    let result = pinned.get(&id).ok_or("结果已关闭。")?;
+    Ok(OcrResultPayload {
+        width: result.cap.width,
+        height: result.cap.height,
+        origin_x: result.cap.origin_x,
+        origin_y: result.cap.origin_y,
+        b64: screenshot::encode_base64(&result.cap.pixels),
+        blocks: result.blocks.clone(),
+    })
+}
+
+/// 关闭一个钉住的窗口并立刻清空内存里的截图和识别结果。
+#[tauri::command]
+fn close_pinned(app: tauri::AppHandle, id: u64) {
+    if let Ok(mut pinned) = PINNED.lock() {
+        pinned.remove(&id);
+    }
+    if let Some(window) = app.get_webview_window(&format!("pinned-{id}")) {
+        let _ = window.close();
+    }
 }
 
 /// 框选结束：裁剪选中区域，识别文字，合并成段落，翻译并把译文盖回原位
@@ -1086,6 +1174,9 @@ pub fn run() {
             panel_resize,
             get_screenshot,
             get_ocr_result,
+            pin_result,
+            get_pinned_result,
+            close_pinned,
             overlay_select,
             overlay_cancel
         ])
