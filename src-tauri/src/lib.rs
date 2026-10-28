@@ -5,6 +5,7 @@ mod offline;
 mod paragraph;
 mod picker;
 mod screenshot;
+mod screenshot_flow;
 mod secrets;
 mod selection;
 mod settings;
@@ -239,8 +240,8 @@ fn get_screenshot() -> Result<ScreenshotPayload, String> {
     })
 }
 
-/// 框选结束：裁剪选中区域，识别文字。O2 阶段把识别出的文字送到结果窗
-/// 显示（O5 再改成盖回原位）。
+/// 框选结束：裁剪选中区域，识别文字，合并成段落并翻译（O4）。译文先送到
+/// 结果窗显示（O5 再改成盖回原位）。
 #[tauri::command]
 async fn overlay_select(
     app: tauri::AppHandle,
@@ -275,16 +276,48 @@ async fn overlay_select(
         let _ = app.emit("selection-error", "没有识别到文字。".to_string());
         return Ok(());
     }
-    let text = lines
+
+    // 合并成段落，再按段落并发翻译。目标语言按 S7 的方向规则（用整段文字判断）。
+    let paragraphs = paragraph::merge(lines);
+    let stored = settings_dir(&app)
+        .map(|dir| settings::load(&dir))
+        .unwrap_or_default();
+    let native = stored.native.clone();
+    let all_text = paragraphs
         .iter()
-        .map(|l| l.text.clone())
+        .map(|p| p.text.as_str())
         .collect::<Vec<_>>()
         .join("\n");
+    let target = translate::resolve_target(&all_text, &native, None);
+    let mt_source = if stored.local_only {
+        "offline".to_string()
+    } else {
+        stored.mt_source.clone()
+    };
+    let model_dir = settings_dir(&app)
+        .unwrap_or_else(|_| std::env::temp_dir().join("Vela"))
+        .join("models");
+    let translator =
+        screenshot_flow::mt_translator(mt_source, model_dir, stored.deepl_key);
+    let blocks = screenshot_flow::translate_paragraphs(paragraphs, target, translator).await;
+
+    // O4 阶段把译文拼成文本送到结果窗（O5 再改为盖回原位）。保留换行，
+    // 段落之间空一行；未翻译（公式/代码）和失败的段落回退到原文并标注。
+    let text = blocks
+        .iter()
+        .map(|b| {
+            if b.skip {
+                format!("〔未翻译〕{}", b.original)
+            } else if !b.translated.is_empty() {
+                b.translated.clone()
+            } else {
+                format!("〔翻译失败〕{}", b.original)
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n");
     place_and_show(&app);
-    let _ = app.emit(
-        "selection-captured",
-        SelectionPayload { text, action: "translate".into(), editable: false },
-    );
+    let _ = app.emit("ocr-translated", text);
     Ok(())
 }
 

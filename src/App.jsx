@@ -564,6 +564,24 @@ function App() {
       }
     }).then((unsub) => unsubs.push(unsub));
 
+    // 截图翻译（O4）：后端已译好并拼成文本，直接显示译文，不再触发翻译。
+    listen("ocr-translated", (event) => {
+      const text = String(event.payload ?? "");
+      setDirection("auto");
+      setSource(text);
+      setFromSelection(true);
+      setEditable(false);
+      setMode("translate");
+      setDiffExplanation("");
+      clearMt();
+      clearAi();
+      setMtText(text);
+      setMtService("ocr");
+      setMtStatus("done");
+      setError("");
+      setMeta("截图翻译");
+    }).then((unsub) => unsubs.push(unsub));
+
     listen("selection-error", (event) => {
       mtGeneration += 1;
       aiGeneration += 1;
@@ -645,6 +663,8 @@ function App() {
         return "离线";
       case "google":
         return "Google";
+      case "ocr":
+        return "截图识别";
       default:
         return "机器翻译";
     }
