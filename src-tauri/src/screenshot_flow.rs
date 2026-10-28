@@ -27,6 +27,57 @@ pub struct TranslatedBlock {
     pub error: String,
 }
 
+/// A block ready to be painted over the screenshot (O5). Only blocks with a
+/// non-empty `translated` are painted; skipped and failed blocks leave the
+/// original image showing.
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RenderBlock {
+    pub original: String,
+    pub translated: String,
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
+    pub skip: bool,
+    /// Background colour as `#rrggbb`, sampled from the block's border.
+    pub bg_color: String,
+    /// Text colour (`#000000` or `#ffffff`) chosen by background luminance.
+    pub text_color: String,
+    /// True when the border is uniform enough to fill opaquely.
+    pub solid_bg: bool,
+}
+
+/// Attach background/text colours to each block by sampling the screenshot.
+pub fn prepare_render(
+    blocks: Vec<TranslatedBlock>,
+    pixels: &[u8],
+    img_w: i32,
+    img_h: i32,
+) -> Vec<RenderBlock> {
+    blocks
+        .into_iter()
+        .map(|b| {
+            let (r, g, bl, solid) =
+                crate::screenshot::sample_background(pixels, img_w, img_h, b.x, b.y, b.width, b.height);
+            let luminance = 0.299 * r as f32 + 0.587 * g as f32 + 0.114 * bl as f32;
+            let text_color = if luminance > 140.0 { "#000000" } else { "#ffffff" };
+            RenderBlock {
+                original: b.original,
+                translated: b.translated,
+                x: b.x,
+                y: b.y,
+                width: b.width,
+                height: b.height,
+                skip: b.skip,
+                bg_color: format!("#{r:02x}{g:02x}{bl:02x}"),
+                text_color: text_color.to_string(),
+                solid_bg: solid,
+            }
+        })
+        .collect()
+}
+
 /// Swappable "translate one text" step, so the reorder and error-isolation
 /// logic can be unit-tested without any network call.
 #[async_trait]

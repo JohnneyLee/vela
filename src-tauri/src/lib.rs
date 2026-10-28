@@ -39,6 +39,12 @@ static SCREENSHOT_SHORTCUT: OnceLock<Mutex<Shortcut>> = OnceLock::new();
 /// 最近一次全屏截图，只存内存，供 overlay 窗口读取，关闭即清除。
 static SCREENSHOT: Mutex<Option<screenshot::ScreenCapture>> = Mutex::new(None);
 
+/// 截图翻译的选中区域图（O5），供 overlay 结果模式读取，关闭即清除。
+static RESULT_IMAGE: Mutex<Option<screenshot::ScreenCapture>> = Mutex::new(None);
+
+/// 截图翻译的渲染块（O5），供 overlay 结果模式读取，关闭即清除。
+static OCR_BLOCKS: Mutex<Option<Vec<screenshot_flow::RenderBlock>>> = Mutex::new(None);
+
 fn default_clipboard_shortcut() -> Shortcut {
     Shortcut::new(
         Some(Modifiers::CONTROL | Modifiers::ALT | Modifiers::SHIFT),
@@ -122,6 +128,18 @@ struct ScreenshotPayload {
     origin_y: i32,
     /// RGBA pixels, base64-encoded.
     b64: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct OcrResultPayload {
+    width: i32,
+    height: i32,
+    origin_x: i32,
+    origin_y: i32,
+    /// RGBA pixels of the selected region, base64-encoded.
+    b64: String,
+    blocks: Vec<screenshot_flow::RenderBlock>,
 }
 
 #[derive(Serialize)]
@@ -240,8 +258,25 @@ fn get_screenshot() -> Result<ScreenshotPayload, String> {
     })
 }
 
-/// 框选结束：裁剪选中区域，识别文字，合并成段落并翻译（O4）。译文先送到
-/// 结果窗显示（O5 再改成盖回原位）。
+/// 把截图翻译结果（选中区域图 + 渲染块）交给 overlay 结果模式显示。
+#[tauri::command]
+fn get_ocr_result() -> Result<OcrResultPayload, String> {
+    let cap_guard = RESULT_IMAGE.lock().map_err(|e| e.to_string())?;
+    let cap = cap_guard.as_ref().ok_or("没有可用的截图翻译结果。")?;
+    let blocks_guard = OCR_BLOCKS.lock().map_err(|e| e.to_string())?;
+    let blocks = blocks_guard.as_ref().cloned().unwrap_or_default();
+    Ok(OcrResultPayload {
+        width: cap.width,
+        height: cap.height,
+        origin_x: cap.origin_x,
+        origin_y: cap.origin_y,
+        b64: screenshot::encode_base64(&cap.pixels),
+        blocks,
+    })
+}
+
+/// 框选结束：裁剪选中区域，识别文字，合并成段落，翻译并把译文盖回原位
+/// （O5）。结果存内存，由 overlay 结果模式显示，关闭即清除。
 #[tauri::command]
 async fn overlay_select(
     app: tauri::AppHandle,
@@ -254,26 +289,30 @@ async fn overlay_select(
         close_overlay(&app);
         return Err("框选区域太小。".into());
     }
-    // 先从内存截图里裁剪，再关闭框选层并清空截图。
-    let cropped = {
+    // 裁剪选中区域并记录其在虚拟桌面上的绝对位置；全屏截图随后即可释放。
+    let (pixels, w, h, abs_x, abs_y) = {
         let guard = SCREENSHOT.lock().map_err(|e| e.to_string())?;
-        guard
-            .as_ref()
-            .map(|cap| screenshot::crop_rgba(cap, x, y, width, height))
+        let cap = guard.as_ref().ok_or("没有可用的截图。")?;
+        let (pixels, w, h) = screenshot::crop_rgba(cap, x, y, width, height);
+        (pixels, w, h, cap.origin_x + x, cap.origin_y + y)
     };
-    close_overlay(&app);
-    let (pixels, w, h) = cropped.ok_or("没有可用的截图。")?;
+    if let Ok(mut guard) = SCREENSHOT.lock() {
+        *guard = None;
+    }
 
-    let lines = tauri::async_runtime::spawn_blocking(move || {
+    let (recognized, pixels) = tauri::async_runtime::spawn_blocking(move || {
         let engine = ocr::WindowsOcr;
-        engine.recognize(&pixels, w, h)
+        let result = engine.recognize(&pixels, w, h);
+        (result, pixels)
     })
     .await
-    .map_err(|e| e.to_string())??;
+    .map_err(|e| e.to_string())?;
+    let lines = recognized?;
 
     if lines.is_empty() {
         place_and_show(&app);
         let _ = app.emit("selection-error", "没有识别到文字。".to_string());
+        close_overlay(&app);
         return Ok(());
     }
 
@@ -301,23 +340,32 @@ async fn overlay_select(
         screenshot_flow::mt_translator(mt_source, model_dir, stored.deepl_key);
     let blocks = screenshot_flow::translate_paragraphs(paragraphs, target, translator).await;
 
-    // O4 阶段把译文拼成文本送到结果窗（O5 再改为盖回原位）。保留换行，
-    // 段落之间空一行；未翻译（公式/代码）和失败的段落回退到原文并标注。
-    let text = blocks
-        .iter()
-        .map(|b| {
-            if b.skip {
-                format!("〔未翻译〕{}", b.original)
-            } else if !b.translated.is_empty() {
-                b.translated.clone()
-            } else {
-                format!("〔翻译失败〕{}", b.original)
-            }
-        })
-        .collect::<Vec<_>>()
-        .join("\n\n");
-    place_and_show(&app);
-    let _ = app.emit("ocr-translated", text);
+    // 采样每个段落边框的背景色，准备渲染块（擦除原文 + 写译文）。
+    let render = screenshot_flow::prepare_render(blocks, &pixels, w, h);
+
+    // 保存结果供 overlay 结果模式读取。
+    if let Ok(mut guard) = RESULT_IMAGE.lock() {
+        *guard = Some(screenshot::ScreenCapture {
+            width: w,
+            height: h,
+            origin_x: abs_x,
+            origin_y: abs_y,
+            pixels,
+            monitors: Vec::new(),
+        });
+    }
+    if let Ok(mut guard) = OCR_BLOCKS.lock() {
+        *guard = Some(render);
+    }
+
+    // 把 overlay 缩到选中区域并切换到结果模式。
+    if let Some(window) = app.get_webview_window("overlay") {
+        let _ = window.set_position(PhysicalPosition::new(abs_x, abs_y));
+        let _ = window.set_size(PhysicalSize::new(w as u32, h as u32));
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+    let _ = app.emit("ocr-result-ready", ());
     Ok(())
 }
 
@@ -332,6 +380,12 @@ fn close_overlay(app: &tauri::AppHandle) {
         let _ = window.hide();
     }
     if let Ok(mut guard) = SCREENSHOT.lock() {
+        *guard = None;
+    }
+    if let Ok(mut guard) = RESULT_IMAGE.lock() {
+        *guard = None;
+    }
+    if let Ok(mut guard) = OCR_BLOCKS.lock() {
         *guard = None;
     }
 }
@@ -1031,6 +1085,7 @@ pub fn run() {
             settings_close,
             panel_resize,
             get_screenshot,
+            get_ocr_result,
             overlay_select,
             overlay_cancel
         ])

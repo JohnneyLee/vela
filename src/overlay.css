@@ -31,3 +31,23 @@
   pointer-events: none;
   white-space: nowrap;
 }
+
+/* 结果层：鼠标不再框选。 */
+.overlay-root.result {
+  cursor: default;
+}
+
+/* 译文块：背景色擦除原文，文字盖回原位。 */
+.ocr-block {
+  position: absolute;
+  box-sizing: border-box;
+  overflow: hidden;
+  padding: 0 2px;
+  line-height: 1.2;
+  text-align: left;
+  word-break: break-word;
+  white-space: normal;
+  display: flex;
+  align-items: center;
+  pointer-events: none;
+}

@@ -118,6 +118,75 @@ pub fn is_black(pixels: &[u8]) -> bool {
     })
 }
 
+/// Sample the 1-pixel ring around a rectangle and return the per-channel median
+/// colour `(r, g, b)` plus whether the ring is uniform enough to fill opaquely
+/// without a visible seam. Coordinates are in the image's pixel space.
+pub fn sample_background(
+    pixels: &[u8],
+    img_w: i32,
+    img_h: i32,
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+) -> (u8, u8, u8, bool) {
+    let x0 = x.floor().max(0.0) as i32;
+    let y0 = y.floor().max(0.0) as i32;
+    let x1 = ((x + w).ceil() as i32).clamp(0, img_w);
+    let y1 = ((y + h).ceil() as i32).clamp(0, img_h);
+    if x1 <= x0 || y1 <= y0 {
+        return (255, 255, 255, true);
+    }
+
+    let mut rs: Vec<u8> = Vec::new();
+    let mut gs: Vec<u8> = Vec::new();
+    let mut bs: Vec<u8> = Vec::new();
+
+    let mut sample = |px: i32, py: i32| {
+        let idx = (py * img_w + px) as usize * 4;
+        if idx + 3 < pixels.len() {
+            rs.push(pixels[idx]);
+            gs.push(pixels[idx + 1]);
+            bs.push(pixels[idx + 2]);
+        }
+    };
+    // Top and bottom edges.
+    for px in x0..x1 {
+        sample(px, y0);
+        sample(px, y1 - 1);
+    }
+    // Left and right edges (corners already covered).
+    for py in (y0 + 1)..(y1 - 1) {
+        sample(x0, py);
+        sample(x1 - 1, py);
+    }
+
+    if rs.is_empty() {
+        return (255, 255, 255, true);
+    }
+
+    let median = |v: &mut Vec<u8>| -> u8 {
+        v.sort_unstable();
+        v[v.len() / 2]
+    };
+    let r = median(&mut rs);
+    let g = median(&mut gs);
+    let b = median(&mut bs);
+
+    // Uniformity: average per-channel distance from the median colour. Sorting
+    // per channel does not change the sum of absolute deviations.
+    let n = rs.len() as u32;
+    let mut dist = 0u32;
+    for i in 0..rs.len() {
+        dist += (rs[i] as i32 - r as i32).unsigned_abs()
+            + (gs[i] as i32 - g as i32).unsigned_abs()
+            + (bs[i] as i32 - b as i32).unsigned_abs();
+    }
+    let solid = dist / n < 24;
+
+    (r, g, b, solid)
+}
+
 /// Crop an RGBA region out of the capture. Coordinates are physical pixels
 /// relative to the capture's top-left corner.
 pub fn crop_rgba(
@@ -228,5 +297,30 @@ mod tests {
         assert!(!is_black(&[10, 0, 0, 255]));
         assert!(!is_black(&[0, 255, 0, 255]));
         assert!(!is_black(&[0, 0, 5, 255]));
+    }
+
+    #[test]
+    fn sample_background_returns_median_of_solid_region() {
+        let (w, h) = (10i32, 10i32);
+        // All-white RGBA.
+        let px = vec![255u8; (w * h * 4) as usize];
+        let (r, g, b, solid) = sample_background(&px, w, h, 2.0, 2.0, 4.0, 4.0);
+        assert_eq!((r, g, b), (255, 255, 255));
+        assert!(solid);
+    }
+
+    #[test]
+    fn sample_background_detects_nonuniform_background() {
+        let (w, h) = (10i32, 10i32);
+        let mut px = vec![0u8; (w * h * 4) as usize];
+        for (i, p) in px.chunks_exact_mut(4).enumerate() {
+            let v = (i % 256) as u8;
+            p[0] = v;
+            p[1] = v;
+            p[2] = v;
+            p[3] = 255;
+        }
+        let (_r, _g, _b, solid) = sample_background(&px, w, h, 1.0, 1.0, 8.0, 8.0);
+        assert!(!solid);
     }
 }

@@ -1,37 +1,55 @@
-import { createSignal, onCleanup, onMount, Show } from "solid-js";
+import { createSignal, onCleanup, onMount, Show, For } from "solid-js";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import "./tokens.css";
 import "./overlay.css";
 
 // 全屏框选层：显示刚截下的整屏图片，用户拖出矩形，Esc 取消。
+// 结果层（O5）：翻译完成后，把译文块盖回原位显示。
 // 坐标统一用物理像素；显示时按 devicePixelRatio 缩回 CSS 像素，保证 1:1 对齐。
+
 function Overlay() {
-  const [shot, setShot] = createSignal(null);
   const [drag, setDrag] = createSignal(null);
+  const [result, setResult] = createSignal(null);
   let canvasRef;
 
   const dpr = () => window.devicePixelRatio || 1;
 
+  function paintCanvas(data) {
+    const canvas = canvasRef;
+    canvas.width = data.width;
+    canvas.height = data.height;
+    canvas.style.width = `${data.width / dpr()}px`;
+    canvas.style.height = `${data.height / dpr()}px`;
+    const bytes = Uint8ClampedArray.from(atob(data.b64), (c) => c.charCodeAt(0));
+    const ctx = canvas.getContext("2d");
+    ctx.putImageData(new ImageData(bytes, data.width, data.height), 0, 0);
+  }
+
   onMount(() => {
+    const unsubs = [];
     invoke("get_screenshot")
-      .then((data) => {
-        setShot(data);
-        const canvas = canvasRef;
-        canvas.width = data.width;
-        canvas.height = data.height;
-        canvas.style.width = `${data.width / dpr()}px`;
-        canvas.style.height = `${data.height / dpr()}px`;
-        const bytes = Uint8ClampedArray.from(atob(data.b64), (c) => c.charCodeAt(0));
-        const ctx = canvas.getContext("2d");
-        ctx.putImageData(new ImageData(bytes, data.width, data.height), 0, 0);
-      })
+      .then((data) => paintCanvas(data))
       .catch(() => invoke("overlay_cancel"));
+
+    // 翻译完成：加载选中区域截图 + 译文块，切换到结果模式。
+    listen("ocr-result-ready", () => {
+      invoke("get_ocr_result")
+        .then((data) => {
+          setResult(data);
+          paintCanvas(data);
+        })
+        .catch(() => invoke("overlay_cancel"));
+    }).then((unsub) => unsubs.push(unsub));
 
     const onKey = (e) => {
       if (e.key === "Escape") invoke("overlay_cancel");
     };
     window.addEventListener("keydown", onKey);
-    onCleanup(() => window.removeEventListener("keydown", onKey));
+    onCleanup(() => {
+      window.removeEventListener("keydown", onKey);
+      unsubs.forEach((unsub) => unsub());
+    });
   });
 
   function phys(e) {
@@ -43,6 +61,7 @@ function Overlay() {
   }
 
   function onDown(e) {
+    if (result()) return;
     const p = phys(e);
     setDrag({ x0: p.x, y0: p.y, x1: p.x, y1: p.y });
   }
@@ -86,12 +105,62 @@ function Overlay() {
   }
 
   return (
-    <div class="overlay-root" onMouseDown={onDown} onMouseMove={onMove} onMouseUp={onUp}>
+    <div
+      class="overlay-root"
+      classList={{ result: !!result() }}
+      onMouseDown={onDown}
+      onMouseMove={onMove}
+      onMouseUp={onUp}
+    >
       <canvas ref={canvasRef} class="overlay-canvas" />
-      <Show when={selStyle()}>
+      <Show when={!result() && selStyle()}>
         <div class="overlay-sel" style={selStyle()} />
       </Show>
-      <div class="overlay-hint">拖出矩形框选要翻译的区域，Esc 取消</div>
+      <Show when={!result()}>
+        <div class="overlay-hint">拖出矩形框选要翻译的区域，Esc 取消</div>
+      </Show>
+      <Show when={result()}>
+        <For each={result().blocks.filter((b) => b.translated)}>
+          {(b) => <OcrBlock block={b} />}
+        </For>
+      </Show>
+    </div>
+  );
+}
+
+// 一个译文块：用边框采样出的背景色擦除原文，再写译文。字号从行高估计，
+// 放不下就逐步缩小到 9px。
+function OcrBlock(props) {
+  const b = props.block;
+  let elRef;
+
+  onMount(() => {
+    const el = elRef;
+    const dpr = window.devicePixelRatio || 1;
+    const hCss = b.height / dpr;
+    let size = Math.max(9, Math.min(hCss * 0.8, 32));
+    el.style.fontSize = `${size}px`;
+    // 逐步缩小，直到译文放进原文矩形，或到达最小 9px。
+    while (size > 9 && el.scrollHeight > el.clientHeight + 1) {
+      size -= 1;
+      el.style.fontSize = `${size}px`;
+    }
+  });
+
+  return (
+    <div
+      ref={elRef}
+      class="ocr-block"
+      style={{
+        left: `${b.x / dpr()}px`,
+        top: `${b.y / dpr()}px`,
+        width: `${b.width / dpr()}px`,
+        height: `${b.height / dpr()}px`,
+        "background-color": b.solidBg ? b.bgColor : `${b.bgColor}d9`,
+        color: b.textColor,
+      }}
+    >
+      {b.translated}
     </div>
   );
 }
