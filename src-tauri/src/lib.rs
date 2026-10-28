@@ -2,6 +2,7 @@ mod capture;
 mod dpapi;
 mod ocr;
 mod offline;
+mod paragraph;
 mod picker;
 mod screenshot;
 mod secrets;
