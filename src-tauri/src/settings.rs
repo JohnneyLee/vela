@@ -53,6 +53,8 @@ pub struct Settings {
     pub theme: String,
     #[serde(default = "default_native")]
     pub native: String,
+    #[serde(default = "default_clipboard_shortcut")]
+    pub clipboard_shortcut: String,
 }
 
 fn default_mt() -> String {
@@ -81,6 +83,10 @@ fn default_display_mode() -> String {
 
 fn default_theme() -> String {
     "system".into()
+}
+
+fn default_clipboard_shortcut() -> String {
+    "ctrl+alt+shift+t".into()
 }
 
 /// 母语默认值：取系统界面语言，取不到（非 zh/en/ja）就回退中文。
@@ -124,6 +130,7 @@ impl Default for Settings {
             ollama_model: String::new(),
             theme: default_theme(),
             native: default_native(),
+            clipboard_shortcut: default_clipboard_shortcut(),
         }
     }
 }
@@ -166,6 +173,10 @@ impl Settings {
             "zh" | "en" | "ja" => self.native,
             _ => default_native(),
         };
+        self.clipboard_shortcut = self.clipboard_shortcut.trim().to_ascii_lowercase();
+        if self.clipboard_shortcut.is_empty() {
+            self.clipboard_shortcut = default_clipboard_shortcut();
+        }
         self.source_height = self.source_height.clamp(48, 400);
         self
     }

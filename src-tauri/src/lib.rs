@@ -12,7 +12,7 @@ mod windows;
 mod writeback;
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
 
 use serde::Serialize;
 use tauri::{
@@ -24,6 +24,57 @@ use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 
 static CAPTURING: AtomicBool = AtomicBool::new(false);
+
+/// 当前「翻译剪贴板」快捷键（可在设置里改）。handler 用它和按键对比。
+static CLIPBOARD_SHORTCUT: OnceLock<Mutex<Shortcut>> = OnceLock::new();
+
+fn default_clipboard_shortcut() -> Shortcut {
+    Shortcut::new(
+        Some(Modifiers::CONTROL | Modifiers::ALT | Modifiers::SHIFT),
+        Code::KeyT,
+    )
+}
+
+fn current_clipboard_shortcut() -> Shortcut {
+    let lock = CLIPBOARD_SHORTCUT.get_or_init(|| Mutex::new(default_clipboard_shortcut()));
+    *lock.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// 把设置里存的字符串解析成快捷键；解析失败回退默认值。
+fn parse_clipboard_shortcut(raw: &str) -> Shortcut {
+    raw.parse::<Shortcut>().unwrap_or_else(|_| default_clipboard_shortcut())
+}
+
+/// 把快捷键转成用户可读的 "Ctrl+Alt+Shift+T" 形式。
+fn format_shortcut(sc: &Shortcut) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    if sc.mods.contains(Modifiers::CONTROL) {
+        parts.push("Ctrl".into());
+    }
+    if sc.mods.contains(Modifiers::ALT) {
+        parts.push("Alt".into());
+    }
+    if sc.mods.contains(Modifiers::SHIFT) {
+        parts.push("Shift".into());
+    }
+    if sc.mods.contains(Modifiers::SUPER) {
+        parts.push("Win".into());
+    }
+    let key = sc.key.to_string();
+    let key = key
+        .strip_prefix("Key")
+        .or_else(|| key.strip_prefix("Digit"))
+        .unwrap_or(&key)
+        .to_string();
+    parts.push(key);
+    parts.join("+")
+}
+
+/// 把错误提示里的 {shortcut} 占位符替换成当前「翻译剪贴板」快捷键。
+fn fill_shortcut(msg: String) -> String {
+    let sc = format_shortcut(&current_clipboard_shortcut());
+    msg.replace("{shortcut}", &sc)
+}
 
 /// 让「设置页开关」和「托盘菜单勾选」能互相改对方：保存托盘里的
 /// CheckMenuItem，命令里直接改它的勾选状态。
@@ -74,6 +125,31 @@ fn recommend_action(app: &tauri::AppHandle, text: &str) -> String {
     suggest::recommend_id(text, editable, native).to_string()
 }
 
+/// 按下「翻译剪贴板」快捷键：读一次剪贴板里的文字并翻译。不监听剪贴板。
+fn translate_clipboard(app: &tauri::AppHandle) {
+    picker::hide();
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let text = tauri::async_runtime::spawn_blocking(capture::clipboard::read_text)
+            .await
+            .unwrap_or(None)
+            .and_then(|t| capture::sanitize(&t));
+        match text {
+            Some(text) => {
+                place_and_show(&app);
+                let _ = app.emit(
+                    "selection-captured",
+                    SelectionPayload { text, action: "translate".into(), editable: false },
+                );
+            }
+            None => {
+                place_and_show(&app);
+                let _ = app.emit("selection-error", "剪贴板里没有文字。".to_string());
+            }
+        }
+    });
+}
+
 #[tauri::command]
 fn get_settings(app: tauri::AppHandle) -> settings::Settings {
     settings_dir(&app)
@@ -83,11 +159,39 @@ fn get_settings(app: tauri::AppHandle) -> settings::Settings {
 
 #[tauri::command]
 fn save_settings(app: tauri::AppHandle, settings: settings::Settings) -> Result<(), String> {
+    // 校验「翻译剪贴板」快捷键：空或解析不了直接报错，不保存。
+    if settings.clipboard_shortcut.trim().is_empty()
+        || settings.clipboard_shortcut.parse::<Shortcut>().is_err()
+    {
+        return Err("翻译剪贴板快捷键格式不对。例如：Ctrl+Alt+Shift+T。".into());
+    }
     let theme = settings.theme.clone();
+    let new_shortcut = settings.clipboard_shortcut.clone();
+    let old = settings_dir(&app)
+        .map(|dir| settings::load(&dir))
+        .unwrap_or_default();
     settings::save(&settings_dir(&app)?, &settings)?;
     // 主题变化后广播给所有窗口（bar / panel / settings），让它们即时切换。
     let _ = app.emit("theme-changed", theme);
+    if old.clipboard_shortcut != new_shortcut {
+        rearm_clipboard_shortcut(&app, &new_shortcut)?;
+    }
     Ok(())
+}
+
+/// 重新注册「翻译剪贴板」快捷键并更新全局状态；失败表示新快捷键被占用。
+fn rearm_clipboard_shortcut(app: &tauri::AppHandle, raw: &str) -> Result<(), String> {
+    let parsed = parse_clipboard_shortcut(raw);
+    let _ = app.global_shortcut().unregister(current_clipboard_shortcut());
+    if let Ok(mut guard) = CLIPBOARD_SHORTCUT
+        .get_or_init(|| Mutex::new(default_clipboard_shortcut()))
+        .lock()
+    {
+        *guard = parsed;
+    }
+    app.global_shortcut()
+        .register(parsed)
+        .map_err(|err| format!("翻译剪贴板快捷键 {} 已被占用。{err}", format_shortcut(&parsed)))
 }
 
 #[tauri::command]
@@ -316,7 +420,7 @@ fn bar_pick(app: tauri::AppHandle, action: String) {
             }
             Err(err) => {
                 place_and_show(&app);
-                let _ = app.emit("selection-error", err);
+                let _ = app.emit("selection-error", fill_shortcut(err));
             }
         }
     });
@@ -505,7 +609,7 @@ pub(crate) fn on_hotkey(app: &tauri::AppHandle) {
             }
             Err(err) => {
                 place_and_show(&app);
-                let _ = app.emit("selection-error", err);
+                let _ = app.emit("selection-error", fill_shortcut(err));
             }
         }
         CAPTURING.store(false, Ordering::SeqCst);
@@ -525,10 +629,6 @@ pub fn run() {
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(|app, shortcut, event| {
-                    let wanted = Shortcut::new(
-                        Some(Modifiers::CONTROL | Modifiers::ALT),
-                        Code::KeyT,
-                    );
                     if event.state != ShortcutState::Pressed {
                         return;
                     }
@@ -537,8 +637,16 @@ pub fn run() {
                         hide_result(app);
                         return;
                     }
+                    let wanted = Shortcut::new(
+                        Some(Modifiers::CONTROL | Modifiers::ALT),
+                        Code::KeyT,
+                    );
                     if shortcut == &wanted {
                         on_hotkey(app);
+                        return;
+                    }
+                    if *shortcut == current_clipboard_shortcut() {
+                        translate_clipboard(app);
                     }
                 })
                 .build(),
@@ -616,6 +724,26 @@ pub fn run() {
                 });
             }
 
+            // 注册「翻译剪贴板」快捷键，并用它更新全局状态供 handler 对比。
+            let stored = settings_dir(&app.handle()).map(|dir| settings::load(&dir)).unwrap_or_default();
+            let clip_shortcut = parse_clipboard_shortcut(&stored.clipboard_shortcut);
+            if let Ok(mut guard) = CLIPBOARD_SHORTCUT
+                .get_or_init(|| Mutex::new(default_clipboard_shortcut()))
+                .lock()
+            {
+                *guard = clip_shortcut;
+            }
+            if let Err(err) = app.global_shortcut().register(clip_shortcut) {
+                let label = format_shortcut(&clip_shortcut);
+                let message = format!("翻译剪贴板快捷键 {label} 已被占用。{err}");
+                let handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_millis(800)).await;
+                    place_and_show(&handle);
+                    let _ = handle.emit("hotkey-error", message);
+                });
+            }
+
             if let Some(window) = app.get_webview_window("panel") {
                 let app_handle = app.handle().clone();
                 window.on_window_event(move |event| {
@@ -665,4 +793,51 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_clipboard_shortcut_is_ctrl_alt_shift_t() {
+        let sc = default_clipboard_shortcut();
+        assert_eq!(sc.key, Code::KeyT);
+        assert!(sc.mods.contains(Modifiers::CONTROL | Modifiers::ALT | Modifiers::SHIFT));
+    }
+
+    #[test]
+    fn parse_clipboard_shortcut_accepts_readable_form() {
+        let sc = parse_clipboard_shortcut("Ctrl+Alt+Shift+T");
+        assert_eq!(sc.key, Code::KeyT);
+        assert!(sc.mods.contains(Modifiers::CONTROL | Modifiers::ALT | Modifiers::SHIFT));
+    }
+
+    #[test]
+    fn parse_clipboard_shortcut_falls_back_on_bad_input() {
+        let sc = parse_clipboard_shortcut("not a shortcut");
+        assert_eq!(sc, default_clipboard_shortcut());
+    }
+
+    #[test]
+    fn format_shortcut_is_readable() {
+        let sc = Shortcut::new(
+            Some(Modifiers::CONTROL | Modifiers::ALT | Modifiers::SHIFT),
+            Code::KeyT,
+        );
+        assert_eq!(format_shortcut(&sc), "Ctrl+Alt+Shift+T");
+    }
+
+    #[test]
+    fn fill_shortcut_replaces_placeholder() {
+        if let Ok(mut guard) = CLIPBOARD_SHORTCUT
+            .get_or_init(|| Mutex::new(default_clipboard_shortcut()))
+            .lock()
+        {
+            *guard = default_clipboard_shortcut();
+        }
+        let msg = fill_shortcut("不支持。可按 {shortcut} 翻译。".to_string());
+        assert!(msg.contains("Ctrl+Alt+Shift+T"));
+        assert!(!msg.contains("{shortcut}"));
+    }
 }

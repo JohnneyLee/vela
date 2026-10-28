@@ -37,15 +37,15 @@ impl CaptureError {
     pub fn user_message(&self) -> String {
         match self {
             CaptureError::ElevatedTarget => {
-                "目标窗口以管理员运行，Vela 无法读取。可以在设置里以管理员身份运行 Vela，或改用截图翻译。".into()
+                "目标窗口以管理员运行，Vela 无法读取。可以在设置里以管理员身份运行 Vela，或手动复制文字后按 {shortcut} 翻译剪贴板内容。".into()
             }
             CaptureError::NoSelection => "没有检测到选中的文字。".into(),
             CaptureError::PasswordField => "这是密码框，已跳过。".into(),
-            CaptureError::Timeout => "这个软件响应太慢。可以试试截图翻译。".into(),
+            CaptureError::Timeout => "这个软件响应太慢。可以手动复制文字，再按 {shortcut} 翻译剪贴板内容。".into(),
             CaptureError::InputBlocked => {
-                "无法向这个窗口发送按键。可以试试截图翻译。".into()
+                "无法向这个窗口发送按键。可以手动复制文字，再按 {shortcut} 翻译剪贴板内容。".into()
             }
-            CaptureError::Unsupported => "这个软件不支持直接取词，建议用截图翻译。".into(),
+            CaptureError::Unsupported => "这个软件不支持直接取词。可以手动复制文字，再按 {shortcut} 翻译剪贴板内容。".into(),
             CaptureError::Other(msg) => msg.clone(),
         }
     }

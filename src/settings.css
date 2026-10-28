@@ -66,6 +66,11 @@
   border-radius: var(--radius-btn);
 }
 
+.row .shortcut-input {
+  width: 168px;
+  text-align: center;
+}
+
 /* 淡色细线聚焦，替代沉重的粗黑框 */
 .row select:focus-visible,
 .row input:focus-visible,

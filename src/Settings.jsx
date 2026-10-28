@@ -30,8 +30,25 @@ function provider(id) {
   return AI_PROVIDERS.find((p) => p.id === id);
 }
 
+// 把后端存的小写快捷键转成 "Ctrl+Alt+Shift+T" 显示格式。
+function displayShortcut(raw) {
+  const parts = (raw || "").split("+").filter(Boolean);
+  if (parts.length === 0) return "";
+  return parts
+    .map((p) => {
+      const t = p.trim().toLowerCase();
+      if (t === "ctrl" || t === "control") return "Ctrl";
+      if (t === "alt") return "Alt";
+      if (t === "shift") return "Shift";
+      if (t === "super" || t === "win" || t === "meta") return "Win";
+      return t.toUpperCase();
+    })
+    .join("+");
+}
+
 function Settings() {
   const [native, setNative] = createSignal("zh");
+  const [clipboardShortcut, setClipboardShortcut] = createSignal("Ctrl+Alt+Shift+T");
   const [theme, setTheme] = createSignal("system");
   const [mtSource, setMtSource] = createSignal("google");
   const [aiSource, setAiSource] = createSignal("free");
@@ -84,6 +101,7 @@ function Settings() {
         ollamaModel: ollamaModel(),
         theme: theme(),
         native: native(),
+        clipboardShortcut: clipboardShortcut().toLowerCase().replace(/\s+/g, ""),
         ...partial,
       },
     })
@@ -105,6 +123,7 @@ function Settings() {
         setOllamaModel(s.ollamaModel || "");
         setTheme(s.theme || "system");
         setNative(s.native || "zh");
+        setClipboardShortcut(displayShortcut(s.clipboardShortcut || "ctrl+alt+shift+t"));
         setKeys({
           deepseek: s.hasDeepseekKey,
           deepl: s.hasDeeplKey,
@@ -311,6 +330,20 @@ function Settings() {
             }}
           />
         </label>
+        <label class="row">
+          <span>翻译剪贴板快捷键</span>
+          <input
+            type="text"
+            class="shortcut-input"
+            autocomplete="off"
+            spellcheck={false}
+            placeholder="Ctrl+Alt+Shift+T"
+            value={clipboardShortcut()}
+            onInput={(e) => setClipboardShortcut(e.currentTarget.value)}
+            onBlur={() => save({ clipboardShortcut: clipboardShortcut().toLowerCase().replace(/\s+/g, "") })}
+          />
+        </label>
+        <p class="note">复制文字后按这个快捷键，直接翻译剪贴板里的内容。取词不到时也可用这种方式。</p>
       </section>
 
       <section class="group">

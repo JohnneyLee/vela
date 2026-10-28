@@ -7,7 +7,7 @@ mod error;
 pub(crate) mod input;
 pub(crate) mod uia;
 
-pub use error::{CaptureError, Outcome};
+pub use error::{sanitize, CaptureError, Outcome};
 
 use std::sync::Mutex;
 use std::time::Instant;
