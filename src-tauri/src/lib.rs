@@ -1,12 +1,18 @@
+mod capture;
 mod dpapi;
 mod offline;
 mod picker;
 mod secrets;
 mod selection;
 mod settings;
+mod speech;
+mod suggest;
 mod translate;
+mod windows;
+mod writeback;
 
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
 
 use serde::Serialize;
 use tauri::{
@@ -19,9 +25,17 @@ use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut,
 
 static CAPTURING: AtomicBool = AtomicBool::new(false);
 
+/// 让「设置页开关」和「托盘菜单勾选」能互相改对方：保存托盘里的
+/// CheckMenuItem，命令里直接改它的勾选状态。
+struct AutostartState(Mutex<Option<CheckMenuItem<tauri::Wry>>>);
+
 #[derive(Serialize, Clone)]
 struct SelectionPayload {
     text: String,
+    #[serde(default)]
+    action: String,
+    #[serde(default)]
+    editable: bool,
 }
 
 #[derive(Serialize)]
@@ -58,7 +72,50 @@ fn get_settings(app: tauri::AppHandle) -> settings::Settings {
 
 #[tauri::command]
 fn save_settings(app: tauri::AppHandle, settings: settings::Settings) -> Result<(), String> {
-    settings::save(&settings_dir(&app)?, &settings)
+    let theme = settings.theme.clone();
+    settings::save(&settings_dir(&app)?, &settings)?;
+    // 主题变化后广播给所有窗口（bar / panel / settings），让它们即时切换。
+    let _ = app.emit("theme-changed", theme);
+    Ok(())
+}
+
+#[tauri::command]
+fn save_key(app: tauri::AppHandle, name: String, key: String) -> Result<(), String> {
+    settings::save_key(&settings_dir(&app)?, &name, &key)
+}
+
+/// 开机启动当前是否开启。
+#[tauri::command]
+fn get_autostart(app: tauri::AppHandle) -> bool {
+    app.autolaunch().is_enabled().unwrap_or(false)
+}
+
+/// 设置页开关：改开机启动，并同步托盘勾选与设置页其它窗口。
+#[tauri::command]
+fn set_autostart(app: tauri::AppHandle, enabled: bool) -> Result<bool, String> {
+    let autolaunch = app.autolaunch();
+    let updated = if enabled {
+        autolaunch.enable()
+    } else {
+        autolaunch.disable()
+    };
+    updated.map_err(|err| err.to_string())?;
+    let actual = autolaunch.is_enabled().unwrap_or(false);
+    if let Some(state) = app.try_state::<AutostartState>() {
+        if let Ok(guard) = state.0.lock() {
+            if let Some(item) = guard.as_ref() {
+                let _ = item.set_checked(actual);
+            }
+        }
+    }
+    let _ = app.emit("autostart-changed", actual);
+    Ok(actual)
+}
+
+#[tauri::command]
+fn delete_key(app: tauri::AppHandle, name: String) -> Result<(), String> {
+    settings::delete_key(&settings_dir(&app)?, &name);
+    Ok(())
 }
 
 #[tauri::command]
@@ -70,6 +127,8 @@ async fn translate_text(
     side: Option<String>,
     style: Option<String>,
     direction: Option<String>,
+    mode: Option<String>,
+    polish_level: Option<String>,
     ticket: Option<u64>,
 ) -> Result<TranslateResponse, String> {
     let text = text.trim();
@@ -79,14 +138,25 @@ async fn translate_text(
     let stored = settings_dir(&app)
         .map(|dir| settings::load(&dir))
         .unwrap_or_default();
-    let mt_source = mt_source.unwrap_or_else(|| stored.mt_source.clone());
-    let ai_source = ai_source.unwrap_or_else(|| stored.ai_source.clone());
+    let mut mt_source = mt_source.unwrap_or_else(|| stored.mt_source.clone());
+    let mut ai_source = ai_source.unwrap_or_else(|| stored.ai_source.clone());
+    // 完全本地模式：强制离线翻译 + Ollama，不发任何请求到外网。
+    if stored.local_only {
+        mt_source = "offline".into();
+        ai_source = "ollama".into();
+    }
     let style = style.unwrap_or(stored.style.clone());
     let direction = direction.unwrap_or(stored.direction);
+    let mode = mode.unwrap_or_else(|| "translate".into());
+    let polish_level = polish_level.unwrap_or_else(|| "standard".into());
     let target = translate::resolve_target(text, &direction);
     let keys = translate::ProviderKeys {
         deepl: stored.deepl_key,
         deepseek: stored.deepseek_key,
+        openai: stored.openai_key,
+        moonshot: stored.moonshot_key,
+        gemini: stored.gemini_key,
+        ollama_model: stored.ollama_model,
     };
     let model_dir = settings_dir(&app)
         .unwrap_or_else(|_| std::env::temp_dir().join("Vela"))
@@ -102,6 +172,7 @@ async fn translate_text(
                 target,
                 &mt_source,
                 &model_dir,
+                &keys.deepl,
                 &move |status| {
                     let _ = app_status.emit(
                         "mt-status",
@@ -122,6 +193,8 @@ async fn translate_text(
                 target,
                 &ai_source,
                 style_ref,
+                &mode,
+                &polish_level,
                 &keys,
                 &move |chunk| {
                     let _ = app_chunk.emit(
@@ -143,6 +216,8 @@ async fn translate_text(
                 &mt_source,
                 &ai_source,
                 style_ref,
+                &mode,
+                &polish_level,
                 &keys,
                 &model_dir,
             )
@@ -177,7 +252,7 @@ fn dismiss_shortcut() -> Shortcut {
 
 fn hide_result(app: &tauri::AppHandle) {
     translate::cancel_ai();
-    if let Some(window) = app.get_webview_window("result") {
+    if let Some(window) = app.get_webview_window("panel") {
         let _ = window.hide();
     }
     let _ = app.global_shortcut().unregister(dismiss_shortcut());
@@ -194,8 +269,144 @@ fn dismiss(app: tauri::AppHandle) {
     hide_result(&app);
 }
 
+#[tauri::command]
+fn bar_pick(app: tauri::AppHandle, action: String) {
+    windows::hide_bar(&app);
+    let allow_partial = settings_dir(&app)
+        .map(|dir| settings::load(&dir).allow_partial_clipboard)
+        .unwrap_or(false);
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        // Clicking the bar may have given the bar's WebView focus. Switch back
+        // to the source window (recorded when the bar appeared) before capturing,
+        // so UI Automation / simulated copy target the app the text was in.
+        let captured = tauri::async_runtime::spawn_blocking(move || {
+            let _ = writeback::target::switch_back_and_verify();
+            capture::capture_allow_partial(allow_partial)
+        })
+        .await
+        .unwrap_or_else(|err| Err(err.to_string()));
+        match captured {
+            Ok(text) => {
+                place_and_show(&app);
+                let editable = capture::is_editable_exe(&writeback::target::source_exe());
+                let _ = app.emit(
+                    "selection-captured",
+                    SelectionPayload { text, action, editable },
+                );
+            }
+            Err(err) => {
+                place_and_show(&app);
+                let _ = app.emit("selection-error", err);
+            }
+        }
+    });
+}
+
+#[tauri::command]
+fn bar_hide(app: tauri::AppHandle) {
+    windows::hide_bar(&app);
+}
+
+#[tauri::command]
+fn open_settings(app: tauri::AppHandle) {
+    windows::open_settings(&app);
+}
+
+#[tauri::command]
+fn settings_close(app: tauri::AppHandle) {
+    windows::close_settings(&app);
+}
+
+#[tauri::command]
+fn panel_resize(app: tauri::AppHandle, height: f64) -> Result<(), String> {
+    let Some(window) = app.get_webview_window("panel") else {
+        return Ok(());
+    };
+    let clamped = height.clamp(160.0, 4000.0);
+    // `height` from the frontend is in logical (CSS) pixels; set_size with
+    // LogicalSize lets Tauri do the DPI conversion. Keep the current logical
+    // width (the user may have resized it).
+    let scale = window.scale_factor().unwrap_or(1.0);
+    let current = window
+        .inner_size()
+        .unwrap_or(tauri::PhysicalSize::new(440, 400));
+    let width_logical = current.width as f64 / scale;
+    let _ = window.set_size(tauri::LogicalSize::new(width_logical, clamped));
+    Ok(())
+}
+
+#[tauri::command]
+async fn speak(text: String) -> Result<(), String> {
+    let result = tauri::async_runtime::spawn_blocking(move || speech::speak(&text)).await;
+    match result {
+        Ok(res) => res,
+        Err(err) => Err(format!("朗读线程出错：{err}")),
+    }
+}
+
+#[tauri::command]
+fn replace_text(text: String, original: String) -> Result<(), String> {
+    let exe = writeback::target::source_exe();
+    writeback::write_ready(&text, &exe)?;
+    writeback::undo::store(original);
+    Ok(())
+}
+
+#[tauri::command]
+fn undo_text() -> Result<Option<String>, String> {
+    writeback::undo::undo()
+}
+
+#[tauri::command]
+fn copy_text(text: String) -> Result<(), String> {
+    capture::clipboard::set_text(&text)
+}
+
+#[tauri::command]
+async fn explain_diff(app: tauri::AppHandle, original: String, polished: String) -> Result<String, String> {
+    let stored = settings_dir(&app)
+        .map(|dir| settings::load(&dir))
+        .unwrap_or_default();
+    let keys = translate::ProviderKeys {
+        deepl: stored.deepl_key,
+        deepseek: stored.deepseek_key,
+        openai: stored.openai_key,
+        moonshot: stored.moonshot_key,
+        gemini: stored.gemini_key,
+        ollama_model: stored.ollama_model,
+    };
+    translate::explain_diff(&original, &polished, &stored.ai_source, &keys).await
+}
+
+#[tauri::command]
+async fn test_ai_connection(
+    app: tauri::AppHandle,
+    source: String,
+    key: Option<String>,
+) -> Result<String, String> {
+    let stored = settings_dir(&app)
+        .map(|dir| settings::load(&dir))
+        .unwrap_or_default();
+    let keys = translate::ProviderKeys {
+        deepl: stored.deepl_key,
+        deepseek: stored.deepseek_key,
+        openai: stored.openai_key,
+        moonshot: stored.moonshot_key,
+        gemini: stored.gemini_key,
+        ollama_model: stored.ollama_model,
+    };
+    let override_key = key.unwrap_or_default();
+    translate::test_connection(&source, &override_key, &keys).await
+}
+
+#[tauri::command]
+async fn detect_ollama() -> Result<Vec<String>, String> {
+    translate::detect_ollama().await
+}
+
 fn place_and_show(app: &tauri::AppHandle) {
-    let Some(window) = app.get_webview_window("result") else {
+    let Some(window) = app.get_webview_window("panel") else {
         return;
     };
     if let Ok((x, y)) = selection::cursor_pos() {
@@ -217,10 +428,15 @@ pub(crate) fn show_captured(app: &tauri::AppHandle, text: String) {
     if CAPTURING.swap(true, Ordering::SeqCst) {
         return;
     }
+    writeback::target::remember();
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
         place_and_show(&app);
-        let _ = app.emit("selection-captured", SelectionPayload { text });
+        let editable = capture::is_editable_exe(&writeback::target::source_exe());
+        let _ = app.emit(
+            "selection-captured",
+            SelectionPayload { text, action: String::new(), editable },
+        );
         CAPTURING.store(false, Ordering::SeqCst);
     });
 }
@@ -230,15 +446,40 @@ pub(crate) fn on_hotkey(app: &tauri::AppHandle) {
     if CAPTURING.swap(true, Ordering::SeqCst) {
         return;
     }
+    writeback::target::remember();
+    let allow_partial = settings_dir(app)
+        .map(|dir| settings::load(&dir).allow_partial_clipboard)
+        .unwrap_or(false);
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
-        let captured = tauri::async_runtime::spawn_blocking(selection::capture_selection)
-            .await
-            .unwrap_or_else(|err| Err(err.to_string()));
+        let captured = tauri::async_runtime::spawn_blocking(move || {
+            match capture::capture_allow_partial(allow_partial) {
+                Ok(text) => Ok(text),
+                Err(_) => {
+                    // No selection captured: for chat apps, select the whole
+                    // input field and try once more.
+                    let exe = writeback::target::source_exe();
+                    let pol = writeback::policy::for_exe(&exe);
+                    if pol.select_all {
+                        use ::windows::Win32::UI::Input::KeyboardAndMouse::{VK_CONTROL, VIRTUAL_KEY};
+                        capture::input::send_chord(&[VK_CONTROL], VIRTUAL_KEY(0x41));
+                        capture::capture()
+                    } else {
+                        Err("没有取到选中文字。请先选中要处理的文字。".into())
+                    }
+                }
+            }
+        })
+        .await
+        .unwrap_or_else(|err| Err(err.to_string()));
         match captured {
             Ok(text) => {
                 place_and_show(&app);
-                let _ = app.emit("selection-captured", SelectionPayload { text });
+                let editable = capture::is_editable_exe(&writeback::target::source_exe());
+                let _ = app.emit(
+                    "selection-captured",
+                    SelectionPayload { text, action: String::new(), editable },
+                );
             }
             Err(err) => {
                 place_and_show(&app);
@@ -290,8 +531,12 @@ pub fn run() {
                 None::<&str>,
             )?;
             let autostart_item = autostart.clone();
+            // 供 set_autostart 命令更新托盘勾选状态。
+            app.manage(AutostartState(Mutex::new(Some(autostart.clone()))));
             let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&autostart, &quit])?;
+            let settings_item = MenuItem::with_id(app, "settings", "设置", true, None::<&str>)?;
+            let bar_item = MenuItem::with_id(app, "show-bar", "显示动作条（测试）", true, None::<&str>)?;
+            let menu = Menu::with_items(app, &[&bar_item, &settings_item, &autostart, &quit])?;
             let mut tray = TrayIconBuilder::new()
                 .tooltip("Vela")
                 .menu(&menu)
@@ -299,6 +544,12 @@ pub fn run() {
                 .on_menu_event(move |app, event| {
                     if event.id.as_ref() == "quit" {
                         app.exit(0);
+                    } else if event.id.as_ref() == "settings" {
+                        windows::open_settings(app);
+                    } else if event.id.as_ref() == "show-bar" {
+                        if let Ok((x, y)) = selection::cursor_pos() {
+                            windows::show_bar(app, x, y, "translate".into());
+                        }
                     } else if event.id.as_ref() == "autostart" {
                         let autolaunch = app.autolaunch();
                         let enabled = autolaunch.is_enabled().unwrap_or(false);
@@ -309,6 +560,8 @@ pub fn run() {
                         };
                         if updated.is_ok() {
                             let _ = autostart_item.set_checked(!enabled);
+                            // 同步给设置页的开关。
+                            let _ = app.emit("autostart-changed", !enabled);
                         }
                     }
                 })
@@ -318,7 +571,11 @@ pub fn run() {
                         ..
                     } = event
                     {
-                        place_and_show(tray.app_handle());
+                        // Show the action bar at the cursor (temporary entry to
+                        // test the bar window and focus behaviour).
+                        if let Ok((x, y)) = selection::cursor_pos() {
+                            windows::show_bar(tray.app_handle(), x, y, "translate".into());
+                        }
                     }
                 });
             if let Some(icon) = app.default_window_icon() {
@@ -326,6 +583,11 @@ pub fn run() {
             }
             tray.build(app)?;
             picker::start(app.handle().clone());
+
+            // Make the bar non-activating so it never steals focus.
+            if let Some(bar) = windows::bar(app.handle()) {
+                windows::apply_no_activate(&bar);
+            }
 
             let shortcut = Shortcut::new(Some(Modifiers::CONTROL | Modifiers::ALT), Code::KeyT);
             if let Err(err) = app.global_shortcut().register(shortcut) {
@@ -338,12 +600,26 @@ pub fn run() {
                 });
             }
 
-            if let Some(window) = app.get_webview_window("result") {
+            if let Some(window) = app.get_webview_window("panel") {
                 let app_handle = app.handle().clone();
                 window.on_window_event(move |event| {
                     if let WindowEvent::CloseRequested { api, .. } = event {
                         api.prevent_close();
                         hide_result(&app_handle);
+                    }
+                });
+            }
+
+            // Settings keeps the native title bar, so its close button goes
+            // through CloseRequested. Route it to the same hide path as Esc and
+            // the tray, so every close entry point shares one handler (the hook
+            // for a future "unsaved key" prompt).
+            if let Some(window) = app.get_webview_window("settings") {
+                let app_handle = app.handle().clone();
+                window.on_window_event(move |event| {
+                    if let WindowEvent::CloseRequested { api, .. } = event {
+                        api.prevent_close();
+                        windows::close_settings(&app_handle);
                     }
                 });
             }
@@ -353,7 +629,23 @@ pub fn run() {
             translate_text,
             get_settings,
             save_settings,
-            dismiss
+            save_key,
+            delete_key,
+            get_autostart,
+            set_autostart,
+            dismiss,
+            speak,
+            replace_text,
+            undo_text,
+            copy_text,
+            explain_diff,
+            test_ai_connection,
+            detect_ollama,
+            bar_pick,
+            bar_hide,
+            open_settings,
+            settings_close,
+            panel_resize
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -8,7 +8,8 @@
     "dev": "vite",
     "build": "vite build",
     "serve": "vite preview",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "build:fast": "vite build && cargo build --manifest-path src-tauri/Cargo.toml --profile fast"
   },
   "license": "MIT",
   "dependencies": {

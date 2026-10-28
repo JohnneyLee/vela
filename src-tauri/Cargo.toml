@@ -29,14 +29,22 @@ tokio = { version = "1", features = ["macros", "rt", "sync", "time"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
 futures-util = "0.3"
 urlencoding = "2"
+regex = "1"
 ort = { version = "=2.0.0-rc.14" }
 tokenizers = { version = "0.21", default-features = false, features = ["fancy-regex"] }
 windows = { version = "0.61", features = [
   "Win32_Foundation",
   "Win32_Graphics_Gdi",
+  "Win32_Security",
   "Win32_Security_Credentials",
   "Win32_Security_Cryptography",
+  "Win32_System_Com",
+  "Win32_System_DataExchange",
   "Win32_System_LibraryLoader",
+  "Win32_System_Memory",
+  "Win32_System_Ole",
+  "Win32_System_Threading",
+  "Win32_UI_Accessibility",
   "Win32_UI_HiDpi",
   "Win32_UI_Input_KeyboardAndMouse",
   "Win32_UI_WindowsAndMessaging",
@@ -48,3 +56,12 @@ lto = true
 opt-level = 3
 panic = "abort"
 strip = true
+
+# Fast iteration build: same optimizations but no LTO and parallel codegen,
+# so incremental rebuilds link in ~1-2 minutes instead of 5-10. The exe is a
+# bit larger; use the full `release` profile for the final published build.
+[profile.fast]
+inherits = "release"
+codegen-units = 16
+lto = false
+opt-level = 2

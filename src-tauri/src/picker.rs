@@ -184,14 +184,40 @@ fn probe_and_show() {
     if ctrl_down && c_down {
         return;
     }
-    let Some(text) = crate::selection::probe_selection() else {
-        return;
-    };
     if PROBE_TICK.with(|slot| slot.get()) != tick {
         return;
     }
-    PENDING.with(|slot| *slot.borrow_mut() = text);
-    show_icon();
+    // Only probe with UI Automation — never touch the clipboard on a selection.
+    // If UIA can't confirm text but a selection gesture happened, still show
+    // the bar; the actual capture runs when the user clicks an action.
+    let suggested = match crate::capture::probe_uia_only() {
+        crate::capture::Outcome::Text { text, .. } => recommend(&text),
+        crate::capture::Outcome::Failed(crate::capture::CaptureError::PasswordField) => return,
+        _ => "translate".to_string(),
+    };
+    let x = SHOW_X.with(|slot| slot.get());
+    let y = SHOW_Y.with(|slot| slot.get());
+    if let Some(app) = APP.get() {
+        // Record the source window now, while it is still the foreground window
+        // (the bar itself never takes focus). bar_pick will switch back to it
+        // before capturing, so UIA/copy target the app the text was selected in.
+        crate::writeback::target::remember();
+        crate::windows::show_bar(app, x, y, suggested);
+    }
+}
+
+fn recommend(text: &str) -> String {
+    use crate::suggest::{self, Lang};
+    let editable = crate::capture::is_editable_exe(&crate::capture::current_exe());
+    let hint = suggest::Hint {
+        editable,
+        lang: suggest::detect_lang(text),
+        word_count: suggest::word_count(text),
+        symbol_ratio: suggest::symbol_ratio(text),
+        chars: text.chars().count(),
+    };
+    // Native language defaults to Chinese; wire to settings later.
+    suggest::suggest(&hint, Lang::Zh).id().to_string()
 }
 
 fn on_mouse(wparam: WPARAM, lparam: LPARAM) {
@@ -203,6 +229,12 @@ fn on_mouse(wparam: WPARAM, lparam: LPARAM) {
             DOWN.with(|slot| slot.set(true));
             DOWN_X.with(|slot| slot.set(x));
             DOWN_Y.with(|slot| slot.set(y));
+            // If the action bar is up and the click is outside it, dismiss it.
+            if crate::windows::bar_visible() && !crate::windows::bar_contains(x, y) {
+                if let Some(app) = APP.get() {
+                    crate::windows::hide_bar(app);
+                }
+            }
             if point_in_icon(x, y) {
                 arm_pending();
             } else if VISIBLE.with(|slot| slot.get()) {
@@ -252,6 +284,12 @@ fn on_key(wparam: WPARAM, lparam: LPARAM) {
         }
     }
     if vk == 0x1B {
+        // Esc hides both the legacy icon and the action bar.
+        if crate::windows::bar_visible() {
+            if let Some(app) = APP.get() {
+                crate::windows::hide_bar(app);
+            }
+        }
         post(WM_PICKER_HIDE);
     }
 }

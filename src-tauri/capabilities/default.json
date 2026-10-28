@@ -2,15 +2,30 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "Result popup window",
-  "windows": ["result"],
+  "windows": ["bar", "panel", "settings"],
   "permissions": [
     "core:default",
     "core:window:allow-hide",
+    "core:window:allow-show",
+    "core:window:allow-set-position",
+    "core:window:allow-set-size",
+    "core:window:allow-set-focus",
     "core:window:allow-start-dragging",
     "core:window:allow-start-resize-dragging",
     "allow-translate-text",
     "allow-get-settings",
     "allow-save-settings",
-    "allow-dismiss"
+    "allow-save-key",
+    "allow-dismiss",
+    "allow-speak",
+    "allow-replace-text",
+    "allow-undo-text",
+    "allow-copy-text",
+    "allow-explain-diff",
+    "allow-test-ai-connection",
+    "allow-detect-ollama",
+    "allow-delete-key",
+    "allow-autostart",
+    "allow-bar"
   ]
 }

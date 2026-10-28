@@ -1,0 +1,113 @@
+/* Vela design tokens — single source of truth for color, spacing, radius. */
+:root,
+html[data-theme="light"] {
+  --desk: #e8eaf0;
+  --pg: #fbfbfc;
+  --cd: #ffffff;
+  --tx: #1b1b1f;
+  --mu: #62626e;
+  --ln: rgba(0, 0, 0, 0.09);
+  --hv: rgba(0, 0, 0, 0.06);
+  --ac: #2f5bea;
+  --acx: #ffffff;
+  --acs: rgba(47, 91, 234, 0.12);
+  --ok: #17703f;
+  --oks: rgba(34, 160, 90, 0.16);
+  --no: #a32b2b;
+  --nos: rgba(220, 60, 60, 0.14);
+  --sh: 0 12px 32px rgba(0, 0, 0, 0.14);
+  --radius-card: 16px;
+  --radius-pop: 12px;
+  --radius-btn: 8px;
+  --t: 140ms;
+}
+
+html[data-theme="dark"] {
+  --desk: #1e1e22;
+  --pg: #26262b;
+  --cd: #2c2c31;
+  --tx: #ececf1;
+  --mu: #9a9aa6;
+  --ln: rgba(255, 255, 255, 0.1);
+  --hv: rgba(255, 255, 255, 0.06);
+  --ac: #6b8cff;
+  --acx: #1b1b1f;
+  --acs: rgba(107, 140, 255, 0.22);
+  --ok: #4cc38a;
+  --oks: rgba(76, 195, 138, 0.18);
+  --no: #ff8a80;
+  --nos: rgba(255, 138, 128, 0.18);
+  --sh: 0 12px 32px rgba(0, 0, 0, 0.5);
+}
+
+html[data-theme="green"] {
+  --desk: #cfe3d1;
+  --pg: #c7edcc;
+  --cd: #d6f0d8;
+  --tx: #2b3a2b;
+  --mu: #5c6e5c;
+  --ln: rgba(0, 0, 0, 0.08);
+  --hv: rgba(0, 0, 0, 0.06);
+  --ac: #2f7d4f;
+  --acx: #ffffff;
+  --acs: rgba(47, 125, 79, 0.14);
+  --ok: #17703f;
+  --oks: rgba(34, 160, 90, 0.16);
+  --no: #a32b2b;
+  --nos: rgba(220, 60, 60, 0.14);
+  --sh: 0 12px 32px rgba(0, 0, 0, 0.14);
+}
+
+html[data-theme="sepia"] {
+  --desk: #ece2cc;
+  --pg: #f7f1e3;
+  --cd: #fbf6ea;
+  --tx: #3a3327;
+  --mu: #7a6f5c;
+  --ln: rgba(0, 0, 0, 0.08);
+  --hv: rgba(0, 0, 0, 0.05);
+  --ac: #a3681f;
+  --acx: #ffffff;
+  --acs: rgba(163, 104, 31, 0.14);
+  --ok: #4a7c2f;
+  --oks: rgba(74, 124, 47, 0.16);
+  --no: #a32b2b;
+  --nos: rgba(220, 60, 60, 0.14);
+  --sh: 0 12px 32px rgba(90, 70, 30, 0.18);
+}
+
+@media (prefers-color-scheme: dark) {
+  /* 未显式指定主题时才跟随系统深色 */
+  :root:not([data-theme]) {
+    --desk: #1e1e22;
+    --pg: #26262b;
+    --cd: #2c2c31;
+    --tx: #ececf1;
+    --mu: #9a9aa6;
+    --ln: rgba(255, 255, 255, 0.1);
+    --hv: rgba(255, 255, 255, 0.06);
+    --ac: #6b8cff;
+    --acx: #1b1b1f;
+    --acs: rgba(107, 140, 255, 0.22);
+    --ok: #4cc38a;
+    --oks: rgba(76, 195, 138, 0.18);
+    --no: #ff8a80;
+    --nos: rgba(255, 138, 128, 0.18);
+    --sh: 0 12px 32px rgba(0, 0, 0, 0.5);
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  background: transparent;
+  font-family: "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", sans-serif;
+  color: var(--tx);
+  -webkit-font-smoothing: antialiased;
+  user-select: none;
+}

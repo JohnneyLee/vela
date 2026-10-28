@@ -14,6 +14,61 @@ description = "Allows saving the local engine choice and API keys."
 commands.allow = ["save_settings"]
 
 [[permission]]
+identifier = "allow-save-key"
+description = "Allows saving a single API key."
+commands.allow = ["save_key"]
+
+[[permission]]
 identifier = "allow-dismiss"
 description = "Allows hiding the result window."
 commands.allow = ["dismiss"]
+
+[[permission]]
+identifier = "allow-speak"
+description = "Allows reading text aloud."
+commands.allow = ["speak"]
+
+[[permission]]
+identifier = "allow-replace-text"
+description = "Allows writing a translation back into the source window."
+commands.allow = ["replace_text"]
+
+[[permission]]
+identifier = "allow-undo-text"
+description = "Allows undoing a writeback in the source window."
+commands.allow = ["undo_text"]
+
+[[permission]]
+identifier = "allow-copy-text"
+description = "Allows copying a result to the clipboard."
+commands.allow = ["copy_text"]
+
+[[permission]]
+identifier = "allow-explain-diff"
+description = "Allows asking the AI to explain a polish."
+commands.allow = ["explain_diff"]
+
+[[permission]]
+identifier = "allow-test-ai-connection"
+description = "Allows testing an AI provider connection with a minimal request."
+commands.allow = ["test_ai_connection"]
+
+[[permission]]
+identifier = "allow-detect-ollama"
+description = "Allows detecting a local Ollama instance and listing its models."
+commands.allow = ["detect_ollama"]
+
+[[permission]]
+identifier = "allow-delete-key"
+description = "Allows removing a saved API key."
+commands.allow = ["delete_key"]
+
+[[permission]]
+identifier = "allow-autostart"
+description = "Allows reading and toggling launch-at-login."
+commands.allow = ["get_autostart", "set_autostart"]
+
+[[permission]]
+identifier = "allow-bar"
+description = "Allows showing/hiding the action bar."
+commands.allow = ["bar_pick", "bar_hide", "open_settings", "settings_close", "panel_resize"]

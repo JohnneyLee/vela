@@ -1,0 +1,44 @@
+.bar {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+  padding: 10px;
+  background: var(--cd);
+  border: 1px solid var(--ln);
+  border-radius: var(--radius-card);
+  box-shadow: var(--sh);
+}
+
+.bar-btn {
+  width: 44px;
+  height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--tx);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-btn);
+  cursor: pointer;
+}
+
+.bar-btn:hover {
+  background: var(--hv);
+}
+
+.bar-btn:active {
+  background: var(--ln);
+}
+
+.bar-btn.suggested {
+  background: var(--acs);
+  color: var(--ac);
+  border-color: transparent;
+}
+
+.bar-btn:focus-visible {
+  outline: 1px solid var(--ac);
+  outline-offset: 1px;
+}

@@ -3,7 +3,7 @@
 
 use std::fs::{self, File};
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::{Mutex, OnceLock};
 
 use futures_util::StreamExt;
@@ -315,6 +315,7 @@ fn prepare_runtime() -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
     #[test]
     fn local_model_translates_a_short_greeting() {

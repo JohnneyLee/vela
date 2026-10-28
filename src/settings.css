@@ -1,0 +1,235 @@
+.settings {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  overflow: auto;
+  padding: 16px 24px 24px;
+  background: var(--pg);
+  color: var(--tx);
+  user-select: none;
+  position: relative;
+}
+
+/* 轻提示：右上角浮层，自动淡出 */
+.toast {
+  position: fixed;
+  top: 12px;
+  right: 16px;
+  z-index: 20;
+  padding: 6px 12px;
+  font-size: 13px;
+  color: var(--ok);
+  background: var(--oks);
+  border-radius: var(--radius-btn);
+  animation: toast-in 140ms ease;
+  pointer-events: none;
+}
+
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.group {
+  margin-bottom: 20px;
+}
+
+.group h2 {
+  margin: 0 0 8px;
+  font-size: 13px;
+  color: var(--mu);
+  font-weight: 600;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 0;
+  font-size: 14px;
+}
+
+.row select,
+.row input {
+  font: inherit;
+  padding: 4px 8px;
+  background: var(--cd);
+  color: var(--tx);
+  border: 1px solid var(--ln);
+  border-radius: var(--radius-btn);
+}
+
+/* 淡色细线聚焦，替代沉重的粗黑框 */
+.row select:focus-visible,
+.row input:focus-visible,
+.engine-panel input:focus-visible,
+.engine-panel select:focus-visible,
+.add-item:focus-visible,
+.advanced-toggle:focus-visible {
+  outline: 2px solid var(--ac);
+  outline-offset: 1px;
+}
+
+.note {
+  margin: 4px 0 0;
+  font-size: 12px;
+  color: var(--mu);
+  line-height: 1.6;
+}
+
+.note.warn {
+  color: #b7791f;
+}
+
+.note a {
+  color: var(--ac);
+}
+
+/* —— 当前服务详情卡片 —— */
+.engine-panel {
+  margin: 8px 0;
+  padding: 10px 12px;
+  background: var(--cd);
+  border: 1px solid var(--ln);
+  border-radius: var(--radius-pop);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.engine-panel .row {
+  padding: 4px 0;
+}
+
+.addr {
+  font-size: 12px;
+  color: var(--mu);
+}
+
+.key-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.primary-btn {
+  padding: 5px 12px;
+  font-size: 13px;
+  color: var(--acx);
+  background: var(--ac);
+  border: none;
+  border-radius: var(--radius-btn);
+  cursor: pointer;
+}
+
+.primary-btn:hover {
+  filter: brightness(1.05);
+}
+
+.primary-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.link-btn {
+  font-size: 13px;
+  color: var(--ac);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  padding: 4px 0;
+}
+
+.link-btn:hover {
+  text-decoration: underline;
+}
+
+.link-btn.danger {
+  color: var(--er, #c0392b);
+}
+
+/* 添加服务：预置列表 */
+.add-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 4px 0 8px;
+}
+
+.add-item {
+  padding: 5px 10px;
+  font-size: 13px;
+  color: var(--tx);
+  background: var(--cd);
+  border: 1px solid var(--ln);
+  border-radius: var(--radius-btn);
+  cursor: pointer;
+}
+
+.add-item:hover {
+  background: var(--hv);
+}
+
+/* 折叠的「高级」标题 */
+.advanced-toggle {
+  width: 100%;
+  text-align: left;
+  padding: 8px 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--mu);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+}
+
+.advanced-toggle:hover {
+  color: var(--tx);
+}
+
+/* 开关样式，与页面其余控件统一 */
+.row input.switch {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 36px;
+  height: 20px;
+  padding: 0;
+  border: none;
+  border-radius: 999px;
+  background: var(--ln);
+  position: relative;
+  cursor: pointer;
+  transition: background 140ms ease;
+  flex-shrink: 0;
+}
+
+.row input.switch::before {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #fff;
+  transition: transform 140ms ease;
+}
+
+.row input.switch:checked {
+  background: var(--ac);
+}
+
+.row input.switch:checked::before {
+  transform: translateX(16px);
+}
+
+a {
+  color: var(--ac);
+}
