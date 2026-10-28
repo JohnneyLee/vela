@@ -54,6 +54,21 @@
         "decorations": true,
         "resizable": true,
         "center": true
+      },
+      {
+        "label": "overlay",
+        "title": "Vela 截图",
+        "url": "index.html#/overlay",
+        "width": 800,
+        "height": 600,
+        "visible": false,
+        "decorations": false,
+        "transparent": true,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "resizable": false,
+        "shadow": false,
+        "focus": true
       }
     ],
     "security": {

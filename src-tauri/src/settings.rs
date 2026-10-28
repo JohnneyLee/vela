@@ -55,6 +55,8 @@ pub struct Settings {
     pub native: String,
     #[serde(default = "default_clipboard_shortcut")]
     pub clipboard_shortcut: String,
+    #[serde(default = "default_screenshot_shortcut")]
+    pub screenshot_shortcut: String,
 }
 
 fn default_mt() -> String {
@@ -87,6 +89,10 @@ fn default_theme() -> String {
 
 fn default_clipboard_shortcut() -> String {
     "ctrl+alt+shift+t".into()
+}
+
+fn default_screenshot_shortcut() -> String {
+    "ctrl+alt+s".into()
 }
 
 /// 母语默认值：取系统界面语言，取不到（非 zh/en/ja）就回退中文。
@@ -131,6 +137,7 @@ impl Default for Settings {
             theme: default_theme(),
             native: default_native(),
             clipboard_shortcut: default_clipboard_shortcut(),
+            screenshot_shortcut: default_screenshot_shortcut(),
         }
     }
 }
@@ -176,6 +183,10 @@ impl Settings {
         self.clipboard_shortcut = self.clipboard_shortcut.trim().to_ascii_lowercase();
         if self.clipboard_shortcut.is_empty() {
             self.clipboard_shortcut = default_clipboard_shortcut();
+        }
+        self.screenshot_shortcut = self.screenshot_shortcut.trim().to_ascii_lowercase();
+        if self.screenshot_shortcut.is_empty() {
+            self.screenshot_shortcut = default_screenshot_shortcut();
         }
         self.source_height = self.source_height.clamp(48, 400);
         self

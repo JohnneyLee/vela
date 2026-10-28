@@ -49,6 +49,7 @@ function displayShortcut(raw) {
 function Settings() {
   const [native, setNative] = createSignal("zh");
   const [clipboardShortcut, setClipboardShortcut] = createSignal("Ctrl+Alt+Shift+T");
+  const [screenshotShortcut, setScreenshotShortcut] = createSignal("Ctrl+Alt+S");
   const [theme, setTheme] = createSignal("system");
   const [mtSource, setMtSource] = createSignal("google");
   const [aiSource, setAiSource] = createSignal("free");
@@ -102,6 +103,7 @@ function Settings() {
         theme: theme(),
         native: native(),
         clipboardShortcut: clipboardShortcut().toLowerCase().replace(/\s+/g, ""),
+        screenshotShortcut: screenshotShortcut().toLowerCase().replace(/\s+/g, ""),
         ...partial,
       },
     })
@@ -124,6 +126,7 @@ function Settings() {
         setTheme(s.theme || "system");
         setNative(s.native || "zh");
         setClipboardShortcut(displayShortcut(s.clipboardShortcut || "ctrl+alt+shift+t"));
+        setScreenshotShortcut(displayShortcut(s.screenshotShortcut || "ctrl+alt+s"));
         setKeys({
           deepseek: s.hasDeepseekKey,
           deepl: s.hasDeeplKey,
@@ -343,7 +346,21 @@ function Settings() {
             onBlur={() => save({ clipboardShortcut: clipboardShortcut().toLowerCase().replace(/\s+/g, "") })}
           />
         </label>
+        <label class="row">
+          <span>截图翻译快捷键</span>
+          <input
+            type="text"
+            class="shortcut-input"
+            autocomplete="off"
+            spellcheck={false}
+            placeholder="Ctrl+Alt+S"
+            value={screenshotShortcut()}
+            onInput={(e) => setScreenshotShortcut(e.currentTarget.value)}
+            onBlur={() => save({ screenshotShortcut: screenshotShortcut().toLowerCase().replace(/\s+/g, "") })}
+          />
+        </label>
         <p class="note">复制文字后按这个快捷键，直接翻译剪贴板里的内容。取词不到时也可用这种方式。</p>
+        <p class="note">按截图翻译快捷键框选屏幕区域，识别文字后翻译并盖回原位。</p>
       </section>
 
       <section class="group">

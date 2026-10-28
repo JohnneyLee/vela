@@ -2,6 +2,7 @@ mod capture;
 mod dpapi;
 mod offline;
 mod picker;
+mod screenshot;
 mod secrets;
 mod selection;
 mod settings;
@@ -18,7 +19,7 @@ use serde::Serialize;
 use tauri::{
     menu::{CheckMenuItem, Menu, MenuItem},
     tray::{MouseButton, TrayIconBuilder, TrayIconEvent},
-    Emitter, Manager, PhysicalPosition, WindowEvent,
+    Emitter, Manager, PhysicalPosition, PhysicalSize, WindowEvent,
 };
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
@@ -28,6 +29,12 @@ static CAPTURING: AtomicBool = AtomicBool::new(false);
 /// 当前「翻译剪贴板」快捷键（可在设置里改）。handler 用它和按键对比。
 static CLIPBOARD_SHORTCUT: OnceLock<Mutex<Shortcut>> = OnceLock::new();
 
+/// 当前「截图翻译」快捷键（可在设置里改）。
+static SCREENSHOT_SHORTCUT: OnceLock<Mutex<Shortcut>> = OnceLock::new();
+
+/// 最近一次全屏截图，只存内存，供 overlay 窗口读取，关闭即清除。
+static SCREENSHOT: Mutex<Option<screenshot::ScreenCapture>> = Mutex::new(None);
+
 fn default_clipboard_shortcut() -> Shortcut {
     Shortcut::new(
         Some(Modifiers::CONTROL | Modifiers::ALT | Modifiers::SHIFT),
@@ -35,14 +42,27 @@ fn default_clipboard_shortcut() -> Shortcut {
     )
 }
 
+fn default_screenshot_shortcut() -> Shortcut {
+    Shortcut::new(Some(Modifiers::CONTROL | Modifiers::ALT), Code::KeyS)
+}
+
 fn current_clipboard_shortcut() -> Shortcut {
     let lock = CLIPBOARD_SHORTCUT.get_or_init(|| Mutex::new(default_clipboard_shortcut()));
+    *lock.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+fn current_screenshot_shortcut() -> Shortcut {
+    let lock = SCREENSHOT_SHORTCUT.get_or_init(|| Mutex::new(default_screenshot_shortcut()));
     *lock.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 /// 把设置里存的字符串解析成快捷键；解析失败回退默认值。
 fn parse_clipboard_shortcut(raw: &str) -> Shortcut {
     raw.parse::<Shortcut>().unwrap_or_else(|_| default_clipboard_shortcut())
+}
+
+fn parse_screenshot_shortcut(raw: &str) -> Shortcut {
+    raw.parse::<Shortcut>().unwrap_or_else(|_| default_screenshot_shortcut())
 }
 
 /// 把快捷键转成用户可读的 "Ctrl+Alt+Shift+T" 形式。
@@ -87,6 +107,17 @@ struct SelectionPayload {
     action: String,
     #[serde(default)]
     editable: bool,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct ScreenshotPayload {
+    width: i32,
+    height: i32,
+    origin_x: i32,
+    origin_y: i32,
+    /// RGBA pixels, base64-encoded.
+    b64: String,
 }
 
 #[derive(Serialize)]
@@ -150,6 +181,89 @@ fn translate_clipboard(app: &tauri::AppHandle) {
     });
 }
 
+/// 按下「截图翻译」快捷键：先截下整个屏幕，再显示全屏框选层。
+fn start_screenshot(app: &tauri::AppHandle) {
+    picker::hide();
+    windows::hide_bar(app);
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let captured = tauri::async_runtime::spawn_blocking(screenshot::capture).await;
+        let cap = match captured {
+            Ok(Ok(cap)) => cap,
+            Ok(Err(err)) => {
+                place_and_show(&app);
+                let _ = app.emit("selection-error", err);
+                return;
+            }
+            Err(err) => {
+                place_and_show(&app);
+                let _ = app.emit("selection-error", format!("截图失败：{err}"));
+                return;
+            }
+        };
+        if screenshot::is_black(&cap.pixels) {
+            place_and_show(&app);
+            let _ = app.emit("selection-error", "该画面受保护，无法截图。".to_string());
+            return;
+        }
+        let width = cap.width;
+        let height = cap.height;
+        let origin_x = cap.origin_x;
+        let origin_y = cap.origin_y;
+        if let Ok(mut guard) = SCREENSHOT.lock() {
+            *guard = Some(cap);
+        }
+        if let Some(window) = app.get_webview_window("overlay") {
+            let _ = window.set_position(PhysicalPosition::new(origin_x, origin_y));
+            let _ = window.set_size(PhysicalSize::new(width as u32, height as u32));
+            let _ = window.show();
+            let _ = window.set_focus();
+        }
+    });
+}
+
+/// 把全屏截图交给 overlay 前端显示。
+#[tauri::command]
+fn get_screenshot() -> Result<ScreenshotPayload, String> {
+    let guard = SCREENSHOT.lock().map_err(|e| e.to_string())?;
+    let cap = guard.as_ref().ok_or("没有可用的截图。")?;
+    Ok(ScreenshotPayload {
+        width: cap.width,
+        height: cap.height,
+        origin_x: cap.origin_x,
+        origin_y: cap.origin_y,
+        b64: screenshot::encode_base64(&cap.pixels),
+    })
+}
+
+/// 框选结束：前端把选中矩形（物理像素，相对虚拟桌面原点）传回来。
+/// O1 阶段只记录矩形并关闭框选层；O2 在这里接文字识别。
+#[tauri::command]
+fn overlay_select(app: tauri::AppHandle, x: i32, y: i32, width: i32, height: i32) -> Result<(), String> {
+    close_overlay(&app);
+    // 矩形相对虚拟桌面原点；O2 用它在内存里的截图上做 OCR。
+    if width <= 0 || height <= 0 {
+        return Err("框选区域太小。".into());
+    }
+    eprintln!("[vela-ocr] select x={x} y={y} w={width} h={height}");
+    Ok(())
+}
+
+/// Esc 或 ×：关闭框选层并清空内存里的截图。
+#[tauri::command]
+fn overlay_cancel(app: tauri::AppHandle) {
+    close_overlay(&app);
+}
+
+fn close_overlay(app: &tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window("overlay") {
+        let _ = window.hide();
+    }
+    if let Ok(mut guard) = SCREENSHOT.lock() {
+        *guard = None;
+    }
+}
+
 #[tauri::command]
 fn get_settings(app: tauri::AppHandle) -> settings::Settings {
     settings_dir(&app)
@@ -165,8 +279,14 @@ fn save_settings(app: tauri::AppHandle, settings: settings::Settings) -> Result<
     {
         return Err("翻译剪贴板快捷键格式不对。例如：Ctrl+Alt+Shift+T。".into());
     }
+    if settings.screenshot_shortcut.trim().is_empty()
+        || settings.screenshot_shortcut.parse::<Shortcut>().is_err()
+    {
+        return Err("截图翻译快捷键格式不对。例如：Ctrl+Alt+S。".into());
+    }
     let theme = settings.theme.clone();
     let new_shortcut = settings.clipboard_shortcut.clone();
+    let new_screenshot = settings.screenshot_shortcut.clone();
     let old = settings_dir(&app)
         .map(|dir| settings::load(&dir))
         .unwrap_or_default();
@@ -175,6 +295,9 @@ fn save_settings(app: tauri::AppHandle, settings: settings::Settings) -> Result<
     let _ = app.emit("theme-changed", theme);
     if old.clipboard_shortcut != new_shortcut {
         rearm_clipboard_shortcut(&app, &new_shortcut)?;
+    }
+    if old.screenshot_shortcut != new_screenshot {
+        rearm_screenshot_shortcut(&app, &new_screenshot)?;
     }
     Ok(())
 }
@@ -192,6 +315,21 @@ fn rearm_clipboard_shortcut(app: &tauri::AppHandle, raw: &str) -> Result<(), Str
     app.global_shortcut()
         .register(parsed)
         .map_err(|err| format!("翻译剪贴板快捷键 {} 已被占用。{err}", format_shortcut(&parsed)))
+}
+
+/// 重新注册「截图翻译」快捷键并更新全局状态；失败表示新快捷键被占用。
+fn rearm_screenshot_shortcut(app: &tauri::AppHandle, raw: &str) -> Result<(), String> {
+    let parsed = parse_screenshot_shortcut(raw);
+    let _ = app.global_shortcut().unregister(current_screenshot_shortcut());
+    if let Ok(mut guard) = SCREENSHOT_SHORTCUT
+        .get_or_init(|| Mutex::new(default_screenshot_shortcut()))
+        .lock()
+    {
+        *guard = parsed;
+    }
+    app.global_shortcut()
+        .register(parsed)
+        .map_err(|err| format!("截图翻译快捷键 {} 已被占用。{err}", format_shortcut(&parsed)))
 }
 
 #[tauri::command]
@@ -653,6 +791,10 @@ pub fn run() {
                     }
                     if *shortcut == current_clipboard_shortcut() {
                         translate_clipboard(app);
+                        return;
+                    }
+                    if *shortcut == current_screenshot_shortcut() {
+                        start_screenshot(app);
                     }
                 })
                 .build(),
@@ -750,6 +892,25 @@ pub fn run() {
                 });
             }
 
+            // 注册「截图翻译」快捷键，并用它更新全局状态供 handler 对比。
+            let shot_shortcut = parse_screenshot_shortcut(&stored.screenshot_shortcut);
+            if let Ok(mut guard) = SCREENSHOT_SHORTCUT
+                .get_or_init(|| Mutex::new(default_screenshot_shortcut()))
+                .lock()
+            {
+                *guard = shot_shortcut;
+            }
+            if let Err(err) = app.global_shortcut().register(shot_shortcut) {
+                let label = format_shortcut(&shot_shortcut);
+                let message = format!("截图翻译快捷键 {label} 已被占用。{err}");
+                let handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_millis(800)).await;
+                    place_and_show(&handle);
+                    let _ = handle.emit("hotkey-error", message);
+                });
+            }
+
             if let Some(window) = app.get_webview_window("panel") {
                 let app_handle = app.handle().clone();
                 window.on_window_event(move |event| {
@@ -796,7 +957,10 @@ pub fn run() {
             bar_hide,
             open_settings,
             settings_close,
-            panel_resize
+            panel_resize,
+            get_screenshot,
+            overlay_select,
+            overlay_cancel
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

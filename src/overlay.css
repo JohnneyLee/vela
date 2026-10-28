@@ -1,0 +1,33 @@
+/* 截图框选层：透明窗口上盖一张整屏截图，拖出矩形选区。 */
+.overlay-root {
+  position: fixed;
+  inset: 0;
+  cursor: crosshair;
+  overflow: hidden;
+}
+
+.overlay-canvas {
+  display: block;
+  image-rendering: pixelated;
+}
+
+.overlay-sel {
+  position: fixed;
+  border: 2px solid #2f5bea;
+  background: rgba(47, 91, 234, 0.16);
+  pointer-events: none;
+}
+
+.overlay-hint {
+  position: fixed;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(20, 20, 24, 0.72);
+  color: #fff;
+  padding: 6px 14px;
+  border-radius: 8px;
+  font-size: 13px;
+  pointer-events: none;
+  white-space: nowrap;
+}
