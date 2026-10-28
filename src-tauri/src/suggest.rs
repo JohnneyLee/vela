@@ -63,6 +63,19 @@ pub fn suggest(h: &Hint, native: Lang) -> Action {
     Action::Translate
 }
 
+/// 根据文字内容 + 母语推荐打开结果窗时的默认动作 id。
+/// 纯函数，不读取、不沿用上一次使用过的动作。
+pub fn recommend_id(text: &str, editable: bool, native: Lang) -> &'static str {
+    let hint = Hint {
+        editable,
+        lang: detect_lang(text),
+        word_count: word_count(text),
+        symbol_ratio: symbol_ratio(text),
+        chars: text.chars().count(),
+    };
+    suggest(&hint, native).id()
+}
+
 /// Detect a coarse language from text without pulling in a full detector.
 pub fn detect_lang(text: &str) -> Lang {
     let mut cjk = 0usize;

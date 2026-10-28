@@ -63,6 +63,17 @@ fn settings_dir(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
     app.path().app_config_dir().map_err(|err| err.to_string())
 }
 
+/// 打开结果窗时的默认动作：由 suggest() 按文字内容和母语决定，
+/// 不读取、不沿用上一次使用过的动作。
+fn recommend_action(app: &tauri::AppHandle, text: &str) -> String {
+    let editable = capture::is_editable_exe(&writeback::target::source_exe());
+    let native = settings_dir(app)
+        .map(|dir| settings::load(&dir).native)
+        .unwrap_or_else(|_| "zh".into());
+    let native = suggest::native_lang(&native);
+    suggest::recommend_id(text, editable, native).to_string()
+}
+
 #[tauri::command]
 fn get_settings(app: tauri::AppHandle) -> settings::Settings {
     settings_dir(&app)
@@ -442,9 +453,10 @@ pub(crate) fn show_captured(app: &tauri::AppHandle, text: String) {
     tauri::async_runtime::spawn(async move {
         place_and_show(&app);
         let editable = capture::is_editable_exe(&writeback::target::source_exe());
+        let action = recommend_action(&app, &text);
         let _ = app.emit(
             "selection-captured",
-            SelectionPayload { text, action: String::new(), editable },
+            SelectionPayload { text, action, editable },
         );
         CAPTURING.store(false, Ordering::SeqCst);
     });
@@ -485,9 +497,10 @@ pub(crate) fn on_hotkey(app: &tauri::AppHandle) {
             Ok(text) => {
                 place_and_show(&app);
                 let editable = capture::is_editable_exe(&writeback::target::source_exe());
+                let action = recommend_action(&app, &text);
                 let _ = app.emit(
                     "selection-captured",
-                    SelectionPayload { text, action: String::new(), editable },
+                    SelectionPayload { text, action, editable },
                 );
             }
             Err(err) => {
@@ -544,8 +557,7 @@ pub fn run() {
             app.manage(AutostartState(Mutex::new(Some(autostart.clone()))));
             let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
             let settings_item = MenuItem::with_id(app, "settings", "设置", true, None::<&str>)?;
-            let bar_item = MenuItem::with_id(app, "show-bar", "显示动作条（测试）", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&bar_item, &settings_item, &autostart, &quit])?;
+            let menu = Menu::with_items(app, &[&settings_item, &autostart, &quit])?;
             let mut tray = TrayIconBuilder::new()
                 .tooltip("Vela")
                 .menu(&menu)
@@ -555,10 +567,6 @@ pub fn run() {
                         app.exit(0);
                     } else if event.id.as_ref() == "settings" {
                         windows::open_settings(app);
-                    } else if event.id.as_ref() == "show-bar" {
-                        if let Ok((x, y)) = selection::cursor_pos() {
-                            windows::show_bar(app, x, y, "translate".into());
-                        }
                     } else if event.id.as_ref() == "autostart" {
                         let autolaunch = app.autolaunch();
                         let enabled = autolaunch.is_enabled().unwrap_or(false);
@@ -580,8 +588,7 @@ pub fn run() {
                         ..
                     } = event
                     {
-                        // Show the action bar at the cursor (temporary entry to
-                        // test the bar window and focus behaviour).
+                        // 左键点击托盘：在光标处呼出动作条，作为无快捷键时的入口。
                         if let Ok((x, y)) = selection::cursor_pos() {
                             windows::show_bar(tray.app_handle(), x, y, "translate".into());
                         }

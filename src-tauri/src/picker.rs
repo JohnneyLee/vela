@@ -208,17 +208,9 @@ fn probe_and_show() {
 }
 
 fn recommend(text: &str) -> String {
-    use crate::suggest::{self};
     let editable = crate::capture::is_editable_exe(&crate::capture::current_exe());
-    let hint = suggest::Hint {
-        editable,
-        lang: suggest::detect_lang(text),
-        word_count: suggest::word_count(text),
-        symbol_ratio: suggest::symbol_ratio(text),
-        chars: text.chars().count(),
-    };
-    let native = suggest::native_lang(&native_code());
-    suggest::suggest(&hint, native).id().to_string()
+    let native = crate::suggest::native_lang(&native_code());
+    crate::suggest::recommend_id(text, editable, native).to_string()
 }
 
 /// 读取设置里的母语代码；拿不到设置时回退中文。
