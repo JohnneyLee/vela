@@ -124,7 +124,6 @@ function App() {
   const edited = {
     mtSource: false,
     aiSource: false,
-    direction: false,
     style: false,
   };
   let mtGeneration = 0;
@@ -145,7 +144,6 @@ function App() {
       mtSource: mtSource(),
       aiSource: aiSource(),
       sourceHeight: 72,
-      direction: direction(),
       style: style(),
       displayMode: displayMode(),
     };
@@ -423,7 +421,6 @@ function App() {
   }
 
   function onSetting(flag, apply) {
-    edited[flag] = true;
     apply();
     const rerun = () => {
       if (!source().trim()) return;
@@ -431,6 +428,12 @@ function App() {
       else if (flag === "style" || flag === "aiSource") translateSide("ai", source());
       else if (flag === "mtSource") translateSide("mt", source());
     };
+    // 方向只对这一次有效，立即重跑但不写入设置。
+    if (flag === "direction") {
+      rerun();
+      return;
+    }
+    edited[flag] = true;
     saveSettings()
       .then(rerun)
       .catch(() => {});
@@ -507,7 +510,6 @@ function App() {
         setHasOpenaiKey(Boolean(settings.hasOpenaiKey));
         setHasMoonshotKey(Boolean(settings.hasMoonshotKey));
         setHasGeminiKey(Boolean(settings.hasGeminiKey));
-        if (!edited.direction) setDirection(settings.direction || "auto");
         if (!edited.style) setStyle(settings.style || "none");
         setDisplayMode(settings.displayMode || "compare");
       })
@@ -521,6 +523,8 @@ function App() {
       const raw = String(event.payload?.text ?? "");
       const text = normalizeWhitespace(raw);
       const action = String(event.payload?.action ?? "translate");
+      // 手动方向只对这一次选择有效；新选择回到「自动」。
+      setDirection("auto");
       setSource(text);
       setFromSelection(true);
       setEditable(Boolean(event.payload?.editable));

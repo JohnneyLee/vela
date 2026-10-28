@@ -6,6 +6,7 @@ use std::sync::atomic::{AtomicIsize, Ordering};
 use std::sync::OnceLock;
 use std::time::Instant;
 
+use tauri::Manager;
 use windows::core::w;
 use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, SIZE, WPARAM};
 use windows::Win32::Graphics::Gdi::{
@@ -207,7 +208,7 @@ fn probe_and_show() {
 }
 
 fn recommend(text: &str) -> String {
-    use crate::suggest::{self, Lang};
+    use crate::suggest::{self};
     let editable = crate::capture::is_editable_exe(&crate::capture::current_exe());
     let hint = suggest::Hint {
         editable,
@@ -216,8 +217,19 @@ fn recommend(text: &str) -> String {
         symbol_ratio: suggest::symbol_ratio(text),
         chars: text.chars().count(),
     };
-    // Native language defaults to Chinese; wire to settings later.
-    suggest::suggest(&hint, Lang::Zh).id().to_string()
+    let native = suggest::native_lang(&native_code());
+    suggest::suggest(&hint, native).id().to_string()
+}
+
+/// 读取设置里的母语代码；拿不到设置时回退中文。
+fn native_code() -> String {
+    let Some(app) = APP.get() else {
+        return "zh".into();
+    };
+    let Ok(dir) = app.path().app_config_dir() else {
+        return "zh".into();
+    };
+    crate::settings::load(&dir).native
 }
 
 fn on_mouse(wparam: WPARAM, lparam: LPARAM) {

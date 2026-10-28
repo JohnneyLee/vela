@@ -6,7 +6,17 @@
 pub enum Lang {
     Zh,
     En,
+    Ja,
     Other,
+}
+
+/// 把设置的母语代码转成 Lang。未知代码按中文处理（默认值也是中文）。
+pub fn native_lang(code: &str) -> Lang {
+    match code {
+        "en" => Lang::En,
+        "ja" => Lang::Ja,
+        _ => Lang::Zh,
+    }
 }
 
 /// Scene info gathered at trigger time.
@@ -107,6 +117,19 @@ mod tests {
     fn en() -> Lang {
         Lang::En
     }
+    fn ja() -> Lang {
+        Lang::Ja
+    }
+
+    fn hint(lang: Lang, editable: bool, text: &str) -> Hint {
+        Hint {
+            editable,
+            lang,
+            word_count: word_count(text),
+            symbol_ratio: symbol_ratio(text),
+            chars: text.chars().count(),
+        }
+    }
 
     #[test]
     fn code_heavy_text_suggests_explain() {
@@ -166,6 +189,52 @@ mod tests {
             chars: 60,
         };
         assert_eq!(suggest(&h, zh()), Action::Polish);
+    }
+
+    // 母语英文：选中中文是外语 → 译；选中英文是母语 → 释/润。
+    #[test]
+    fn en_native_chinese_suggests_translate() {
+        let h = hint(detect_lang("你好世界"), false, "你好世界");
+        assert_eq!(suggest(&h, en()), Action::Translate);
+    }
+
+    #[test]
+    fn en_native_english_readonly_suggests_explain() {
+        let h = hint(detect_lang("hello world"), false, "hello world");
+        assert_eq!(suggest(&h, en()), Action::Explain);
+    }
+
+    #[test]
+    fn en_native_english_editable_suggests_polish() {
+        let h = hint(detect_lang("hello world"), true, "hello world");
+        assert_eq!(suggest(&h, en()), Action::Polish);
+    }
+
+    // 母语英文下的单词（detect_lang 判为英文）是母语 → 释。
+    #[test]
+    fn en_native_single_word_suggests_explain() {
+        let h = hint(detect_lang("serendipity"), false, "serendipity");
+        assert_eq!(suggest(&h, en()), Action::Explain);
+    }
+
+    // 母语日文：英文是外语 → 译；可编辑 → 润。
+    #[test]
+    fn ja_native_english_suggests_translate() {
+        let h = hint(detect_lang("hello world"), false, "hello world");
+        assert_eq!(suggest(&h, ja()), Action::Translate);
+    }
+
+    #[test]
+    fn ja_native_english_editable_suggests_polish() {
+        let h = hint(detect_lang("hello world"), true, "hello world");
+        assert_eq!(suggest(&h, ja()), Action::Polish);
+    }
+
+    // 母语日文下，纯代码仍是释（符号占比高优先于语言判断）。
+    #[test]
+    fn ja_native_code_suggests_explain() {
+        let h = hint(Lang::Other, false, "int x = a + b;");
+        assert_eq!(suggest(&h, ja()), Action::Explain);
     }
 
     #[test]

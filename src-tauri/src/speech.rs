@@ -7,15 +7,16 @@ use std::process::Command;
 
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
-pub fn speak(text: &str) -> Result<(), String> {
+/// 按指定语言朗读。`lang` 传 "zh"/"en"/"ja" 时用对应语音；
+/// 传 "auto" 时按文字内容自动判断（含日文假名 → 日语）。
+pub fn speak_with_lang(text: &str, lang: &str) -> Result<(), String> {
     let text = text.trim();
     if text.is_empty() {
         return Err("没有可朗读的文字。".into());
     }
-    let lang = if text.chars().any(crate::translate::is_cjk) {
-        "zh"
-    } else {
-        "en"
+    let lang = match lang {
+        "zh" | "en" | "ja" => lang,
+        _ => detect_voice_lang(text),
     };
 
     let path = std::env::temp_dir().join(format!("vela_speak_{}.txt", std::process::id()));
@@ -79,6 +80,26 @@ pub fn speak(text: &str) -> Result<(), String> {
     }
 }
 
+/// 按文字内容粗判朗读语言：日文假名 → ja，汉字 → zh，否则 en。
+fn detect_voice_lang(text: &str) -> &'static str {
+    let mut has_cjk = false;
+    let mut has_kana = false;
+    for ch in text.chars() {
+        if ('\u{3040}'..='\u{30FF}').contains(&ch) {
+            has_kana = true;
+        } else if ('\u{4E00}'..='\u{9FFF}').contains(&ch) {
+            has_cjk = true;
+        }
+    }
+    if has_kana {
+        "ja"
+    } else if has_cjk {
+        "zh"
+    } else {
+        "en"
+    }
+}
+
 fn encode_utf16le(text: &str) -> Vec<u8> {
     let units: Vec<u16> = text.encode_utf16().collect();
     let mut out = Vec::with_capacity(units.len() * 2);
@@ -136,7 +157,7 @@ mod tests {
     fn speak_accepts_text_without_panicking() {
         // No audio assertion; just ensure the command path does not panic and
         // returns a Result (Ok if a voice is present, Err otherwise).
-        let result = speak("hello test");
+        let result = speak_with_lang("hello test", "auto");
         let _ = result;
     }
 }

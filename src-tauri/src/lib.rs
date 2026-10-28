@@ -146,10 +146,16 @@ async fn translate_text(
         ai_source = "ollama".into();
     }
     let style = style.unwrap_or(stored.style.clone());
-    let direction = direction.unwrap_or(stored.direction);
+    let direction = direction.unwrap_or_else(|| "auto".into());
     let mode = mode.unwrap_or_else(|| "translate".into());
     let polish_level = polish_level.unwrap_or_else(|| "standard".into());
-    let target = translate::resolve_target(text, &direction);
+    // 手动方向（zh-en / en-zh）只对这一次有效；"auto" 表示按母语规则自动判断。
+    let manual = match direction.as_str() {
+        "zh-en" | "en-zh" => Some(direction.as_str()),
+        _ => None,
+    };
+    let native = stored.native.clone();
+    let target = translate::resolve_target(text, &native, manual);
     let keys = translate::ProviderKeys {
         deepl: stored.deepl_key,
         deepseek: stored.deepseek_key,
@@ -195,6 +201,7 @@ async fn translate_text(
                 style_ref,
                 &mode,
                 &polish_level,
+                &native,
                 &keys,
                 &move |chunk| {
                     let _ = app_chunk.emit(
@@ -218,6 +225,7 @@ async fn translate_text(
                 style_ref,
                 &mode,
                 &polish_level,
+                &native,
                 &keys,
                 &model_dir,
             )
@@ -337,8 +345,9 @@ fn panel_resize(app: tauri::AppHandle, height: f64) -> Result<(), String> {
 }
 
 #[tauri::command]
-async fn speak(text: String) -> Result<(), String> {
-    let result = tauri::async_runtime::spawn_blocking(move || speech::speak(&text)).await;
+async fn speak(text: String, lang: Option<String>) -> Result<(), String> {
+    let lang = lang.unwrap_or_else(|| "auto".into());
+    let result = tauri::async_runtime::spawn_blocking(move || speech::speak_with_lang(&text, &lang)).await;
     match result {
         Ok(res) => res,
         Err(err) => Err(format!("朗读线程出错：{err}")),
@@ -376,7 +385,7 @@ async fn explain_diff(app: tauri::AppHandle, original: String, polished: String)
         gemini: stored.gemini_key,
         ollama_model: stored.ollama_model,
     };
-    translate::explain_diff(&original, &polished, &stored.ai_source, &keys).await
+    translate::explain_diff(&original, &polished, &stored.ai_source, &keys, &stored.native).await
 }
 
 #[tauri::command]

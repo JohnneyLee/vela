@@ -35,7 +35,6 @@ function Settings() {
   const [theme, setTheme] = createSignal("system");
   const [mtSource, setMtSource] = createSignal("google");
   const [aiSource, setAiSource] = createSignal("free");
-  const [direction, setDirection] = createSignal("auto");
   const [style, setStyle] = createSignal("none");
   const [displayMode, setDisplayMode] = createSignal("compare");
   const [allowPartialClipboard, setAllowPartialClipboard] = createSignal(false);
@@ -78,13 +77,13 @@ function Settings() {
       settings: {
         mtSource: mtSource(),
         aiSource: aiSource(),
-        direction: direction(),
         style: style(),
         displayMode: displayMode(),
         allowPartialClipboard: allowPartialClipboard(),
         localOnly: localOnly(),
         ollamaModel: ollamaModel(),
         theme: theme(),
+        native: native(),
         ...partial,
       },
     })
@@ -99,13 +98,13 @@ function Settings() {
         setMtSource(s.mtSource || "google");
         setAiSource(s.aiSource || "free");
         setEditId(s.aiSource || "free");
-        setDirection(s.direction || "auto");
         setStyle(s.style || "none");
         setDisplayMode(s.displayMode || "compare");
         setAllowPartialClipboard(Boolean(s.allowPartialClipboard));
         setLocalOnly(Boolean(s.localOnly));
         setOllamaModel(s.ollamaModel || "");
         setTheme(s.theme || "system");
+        setNative(s.native || "zh");
         setKeys({
           deepseek: s.hasDeepseekKey,
           deepl: s.hasDeeplKey,
@@ -272,9 +271,10 @@ function Settings() {
         <h2>通用</h2>
         <label class="row">
           <span>母语</span>
-          <select value={native()} onChange={(e) => setNative(e.currentTarget.value)}>
+          <select value={native()} onChange={(e) => { setNative(e.currentTarget.value); save({ native: e.currentTarget.value }); }}>
             <option value="zh">中文</option>
             <option value="en">English</option>
+            <option value="ja">日本語</option>
           </select>
         </label>
         <label class="row">
@@ -315,14 +315,6 @@ function Settings() {
 
       <section class="group">
         <h2>翻译</h2>
-        <label class="row">
-          <span>方向</span>
-          <select value={direction()} onChange={(e) => { setDirection(e.currentTarget.value); save(); }}>
-            <option value="auto">自动</option>
-            <option value="zh-en">中 → 英</option>
-            <option value="en-zh">英 → 中</option>
-          </select>
-        </label>
         <label class="row">
           <span>机器翻译</span>
           <select value={mtSource()} onChange={(e) => { setMtSource(e.currentTarget.value); save(); }}>

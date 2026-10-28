@@ -51,6 +51,8 @@ pub struct Settings {
     pub ollama_model: String,
     #[serde(default = "default_theme")]
     pub theme: String,
+    #[serde(default = "default_native")]
+    pub native: String,
 }
 
 fn default_mt() -> String {
@@ -81,6 +83,23 @@ fn default_theme() -> String {
     "system".into()
 }
 
+/// 母语默认值：取系统界面语言，取不到（非 zh/en/ja）就回退中文。
+fn default_native() -> String {
+    #[cfg(windows)]
+    {
+        let langid = unsafe { windows::Win32::Globalization::GetUserDefaultUILanguage() };
+        match langid & 0x3FF {
+            0x09 => return "en".into(),
+            0x11 => return "ja".into(),
+            _ => return "zh".into(),
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        "zh".into()
+    }
+}
+
 impl Default for Settings {
     fn default() -> Self {
         Self {
@@ -104,6 +123,7 @@ impl Default for Settings {
             local_only: false,
             ollama_model: String::new(),
             theme: default_theme(),
+            native: default_native(),
         }
     }
 }
@@ -141,6 +161,10 @@ impl Settings {
         self.theme = match self.theme.as_str() {
             "system" | "light" | "dark" | "green" | "sepia" => self.theme,
             _ => default_theme(),
+        };
+        self.native = match self.native.as_str() {
+            "zh" | "en" | "ja" => self.native,
+            _ => default_native(),
         };
         self.source_height = self.source_height.clamp(48, 400);
         self

@@ -339,11 +339,57 @@ pub fn cancel_ai() {
     let _ = CANCEL_TX.send(next);
 }
 
-pub fn resolve_target(text: &str, direction: &str) -> &'static str {
-    match direction {
-        "zh-en" => "en",
-        "en-zh" => "zh-CN",
-        _ => target_lang(text),
+/// 集中处理翻译方向：手动指定 > 按母语自动。
+/// `manual` 是结果窗 ··· 菜单里这一次手动选的方向（zh-en / en-zh / auto）。
+/// 返回目标语言代码，机器翻译引擎和 AI 提示词共同使用。
+pub fn resolve_target(text: &str, native: &str, manual: Option<&str>) -> &'static str {
+    if let Some(dir) = manual {
+        match dir {
+            "zh-en" => return "en",
+            "en-zh" => return "zh-CN",
+            _ => {}
+        }
+    }
+    let native_lang = crate::suggest::native_lang(native);
+    let text_lang = crate::suggest::detect_lang(text);
+    if text_lang == native_lang {
+        // 原文是母语：译成英文；母语本身是英文时译成中文。
+        if native_lang == crate::suggest::Lang::En {
+            "zh-CN"
+        } else {
+            "en"
+        }
+    } else {
+        // 非母语：译成母语。
+        target_code(native_lang)
+    }
+}
+
+/// 母语对应的目标语言代码。
+fn target_code(lang: crate::suggest::Lang) -> &'static str {
+    match lang {
+        crate::suggest::Lang::Zh => "zh-CN",
+        crate::suggest::Lang::En => "en",
+        crate::suggest::Lang::Ja => "ja",
+        crate::suggest::Lang::Other => "zh-CN",
+    }
+}
+
+/// 目标代码 → 给 AI 提示词用的完整语言名。
+fn lang_name(target: &str) -> &'static str {
+    match target {
+        "en" => "English",
+        "ja" => "Japanese",
+        _ => "Simplified Chinese",
+    }
+}
+
+/// 目标代码 → 结果窗顶栏显示的方向标签。
+pub fn direction_label(target: &str) -> &'static str {
+    match target {
+        "en" => "→ English",
+        "ja" => "→ 日本語",
+        _ => "→ 中文",
     }
 }
 
@@ -355,12 +401,13 @@ pub async fn translate_compare(
     style: Option<&str>,
     mode: &str,
     polish_level: &str,
+    native: &str,
     keys: &ProviderKeys,
     model_dir: &Path,
 ) -> CompareTranslation {
     let (mt, ai) = tokio::join!(
         mt_column(text, target, mt_source, model_dir, &keys.deepl, &|_| {}),
-        ai_column(text, target, ai_source, style, mode, polish_level, keys, &|_| {}),
+        ai_column(text, target, ai_source, style, mode, polish_level, native, keys, &|_| {}),
     );
     let secrets = [keys.deepl.as_str(), keys.deepseek.as_str()];
     CompareTranslation {
@@ -392,11 +439,12 @@ pub async fn translate_ai(
     style: Option<&str>,
     mode: &str,
     polish_level: &str,
+    native: &str,
     keys: &ProviderKeys,
     on_chunk: &(dyn Fn(String) + Send + Sync),
 ) -> (String, String, String) {
     cancel_ai();
-    let column = ai_column(text, target, source, style, mode, polish_level, keys, on_chunk).await;
+    let column = ai_column(text, target, source, style, mode, polish_level, native, keys, on_chunk).await;
     let secrets = [keys.deepl.as_str(), keys.deepseek.as_str()];
     (
         column.text,
@@ -537,6 +585,7 @@ async fn ai_column(
     style: Option<&str>,
     mode: &str,
     polish_level: &str,
+    native: &str,
     keys: &ProviderKeys,
     on_chunk: &(dyn Fn(String) + Send + Sync),
 ) -> Column {
@@ -569,7 +618,7 @@ async fn ai_column(
         }
         "deepl" => failed("DeepL 只能翻译，不能解释或润色。请改用其他引擎。"),
         s => {
-            let prompt = ai_prompt(mode, effective, target, style, polish_level);
+            let prompt = ai_prompt(mode, effective, target, style, polish_level, native);
             match chat_with_preset(s, &prompt, keys, &wrapped_chunk, true).await {
                 Ok(text) => ready(text, s),
                 Err(err) if err == CANCELLED => Column {
@@ -617,22 +666,14 @@ async fn ai_column(
 }
 
 fn strict_translation_prompt(text: &str, target: &str) -> String {
-    let language = if target == "en" {
-        "English"
-    } else {
-        "Simplified Chinese"
-    };
+    let language = lang_name(target);
     format!(
         "Translate the following text into {language}. Output only the translation, nothing else.\n\n{text}"
     )
 }
 
 fn translation_prompt(text: &str, target: &str, style: Option<&str>) -> String {
-    let language = if target == "en" {
-        "English"
-    } else {
-        "Simplified Chinese"
-    };
+    let language = lang_name(target);
     let tone = match style {
         Some("academic") => "Use an academic tone.",
         Some("colloquial") => "Use a colloquial, spoken tone.",
@@ -647,22 +688,32 @@ fn translation_prompt(text: &str, target: &str, style: Option<&str>) -> String {
     )
 }
 
-fn ai_prompt(mode: &str, text: &str, target: &str, style: Option<&str>, polish_level: &str) -> String {
+fn ai_prompt(mode: &str, text: &str, target: &str, style: Option<&str>, polish_level: &str, native: &str) -> String {
     match mode {
-        "explain" => explanation_prompt(text),
+        "explain" => explanation_prompt(text, native),
         "polish" => polish_prompt(text, polish_level),
         _ => translation_prompt(text, target, style),
     }
 }
 
-fn explanation_prompt(text: &str) -> String {
+fn explanation_prompt(text: &str, native: &str) -> String {
+    let language = native_name(native);
     format!(
-        "你是词典和语言老师。对下面这段文字，用简体中文解释：\n\
+        "你是词典和语言老师。对下面这段文字，用{language}解释：\n\
          1. 先一句话说明它的含义；\n\
          2. 如果是单词或短语，给出词性、音标和一到两个例句；\n\
          3. 说明它在这个语境里是哪个意思。\n\
          最多写几行，不要长篇大论。\n\n{text}"
     )
+}
+
+/// 母语代码 → 中文提示词里用的语言名。
+fn native_name(native: &str) -> &'static str {
+    match native {
+        "en" => "英文",
+        "ja" => "日语",
+        _ => "简体中文",
+    }
 }
 
 fn polish_prompt(text: &str, level: &str) -> String {
@@ -684,9 +735,10 @@ fn polish_prompt(text: &str, level: &str) -> String {
     )
 }
 
-fn explain_diff_prompt(original: &str, polished: &str) -> String {
+fn explain_diff_prompt(original: &str, polished: &str, native: &str) -> String {
+    let language = native_name(native);
     format!(
-        "下面是一段原文和润色后的文字。请用简体中文简要说明做了哪些修改、为什么这样改。\n\
+        "下面是一段原文和润色后的文字。请用{language}简要说明做了哪些修改、为什么这样改。\n\
          要求：\n\
          - 用一句话先概括主要改动；\n\
          - 再列出 1 到 3 个具体改动点（原文的哪个词/句子 → 改成了什么 → 为什么）；\n\
@@ -701,8 +753,9 @@ pub async fn explain_diff(
     polished: &str,
     source: &str,
     keys: &ProviderKeys,
+    native: &str,
 ) -> Result<String, String> {
-    let prompt = explain_diff_prompt(original, polished);
+    let prompt = explain_diff_prompt(original, polished, native);
     if openai_preset(source).is_none() {
         return Err("当前引擎不支持解释改动。请改用其他引擎。".into());
     }
@@ -871,36 +924,53 @@ fn from_result(result: Result<String, String>, service: &str) -> Column {
     }
 }
 
-pub fn target_lang(text: &str) -> &'static str {
-    if text.chars().any(is_cjk) {
-        "en"
-    } else {
-        "zh-CN"
-    }
-}
-
-pub fn direction_label(target: &str) -> &'static str {
-    if target == "en" {
-        "中文 → English"
-    } else {
-        "English → 中文"
-    }
-}
-
-pub(crate) fn is_cjk(ch: char) -> bool {
-    ('\u{4E00}'..='\u{9FFF}').contains(&ch)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn direction_can_be_forced() {
-        assert_eq!(resolve_target("hello", "zh-en"), "en");
-        assert_eq!(resolve_target("你好", "en-zh"), "zh-CN");
-        assert_eq!(resolve_target("你好", "auto"), "en");
-        assert_eq!(resolve_target("hello", "auto"), "zh-CN");
+        assert_eq!(resolve_target("hello", "zh", Some("zh-en")), "en");
+        assert_eq!(resolve_target("你好", "zh", Some("en-zh")), "zh-CN");
+        // 手动方向优先级最高，即使和母语规则相反。
+        assert_eq!(resolve_target("你好", "zh", Some("en-zh")), "zh-CN");
+        assert_eq!(resolve_target("hello", "zh", Some("zh-en")), "en");
+    }
+
+    #[test]
+    fn direction_auto_zh_native() {
+        // 母语中文：中文→英文，英文→中文。
+        assert_eq!(resolve_target("你好", "zh", None), "en");
+        assert_eq!(resolve_target("hello world", "zh", None), "zh-CN");
+    }
+
+    #[test]
+    fn direction_auto_en_native() {
+        // 母语英文：英文→中文，中文→英文。
+        assert_eq!(resolve_target("hello world", "en", None), "zh-CN");
+        assert_eq!(resolve_target("你好", "en", None), "en");
+    }
+
+    #[test]
+    fn direction_auto_ja_native() {
+        // 母语日语：英语→日语，日语→英文（文本无法判为日语时按非母语处理→日语）。
+        assert_eq!(resolve_target("hello world", "ja", None), "ja");
+        assert_eq!(resolve_target("こんにちは", "ja", None), "ja");
+    }
+
+    #[test]
+    fn direction_auto_mixed_and_code() {
+        // 中英混合、纯单词、代码符号：没有可判定的母语/外语，回退到母语。
+        assert_eq!(resolve_target("你好 hello 世界", "zh", None), "zh-CN");
+        assert_eq!(resolve_target("word", "en", None), "zh-CN");
+        assert_eq!(resolve_target("int x = a + b;", "zh", None), "zh-CN");
+    }
+
+    #[test]
+    fn direction_label_shows_target() {
+        assert_eq!(direction_label("en"), "→ English");
+        assert_eq!(direction_label("zh-CN"), "→ 中文");
+        assert_eq!(direction_label("ja"), "→ 日本語");
     }
 
     #[test]
@@ -912,15 +982,22 @@ mod tests {
 
     #[test]
     fn modes_pick_the_right_prompt() {
-        assert!(ai_prompt("explain", "hello", "zh-CN", None, "standard").contains("词典"));
-        assert!(ai_prompt("polish", "hello", "zh-CN", None, "standard").contains("copy editor"));
-        assert!(ai_prompt("polish", "hello", "zh-CN", None, "light").contains("只改拼写和语法"));
-        assert!(ai_prompt("translate", "hello", "zh-CN", None, "standard").contains("Translate"));
+        assert!(ai_prompt("explain", "hello", "zh-CN", None, "standard", "zh").contains("词典"));
+        assert!(ai_prompt("polish", "hello", "zh-CN", None, "standard", "zh").contains("copy editor"));
+        assert!(ai_prompt("polish", "hello", "zh-CN", None, "light", "zh").contains("只改拼写和语法"));
+        assert!(ai_prompt("translate", "hello", "zh-CN", None, "standard", "zh").contains("Translate"));
+    }
+
+    #[test]
+    fn explain_output_language_follows_native() {
+        assert!(explanation_prompt("hello", "en").contains("用英文解释"));
+        assert!(explanation_prompt("hello", "ja").contains("用日语解释"));
+        assert!(explanation_prompt("hello", "zh").contains("用简体中文解释"));
     }
 
     #[test]
     fn explain_diff_prompt_includes_both_texts() {
-        let prompt = explain_diff_prompt("原文", "润色后");
+        let prompt = explain_diff_prompt("原文", "润色后", "zh");
         assert!(prompt.contains("原文"));
         assert!(prompt.contains("润色后"));
         assert!(prompt.contains("为什么"));
@@ -960,6 +1037,7 @@ mod tests {
             None,
             "translate",
             "standard",
+            "zh",
             &keys,
             &|_| {},
         ));
@@ -980,6 +1058,7 @@ mod tests {
             None,
             "translate",
             "standard",
+            "zh",
             &keys,
             &|_| {},
         ));
