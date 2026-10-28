@@ -1,40 +1,66 @@
 # Vela
 
-选中文字，或直接输入。窗口贴在光标旁边，看完即关，不记住译文。
+Windows 划词翻译工具。选中文字后，窗口贴在光标旁边，翻译、解释、润色或朗读，看完即关，不记住译文。
 
-Select text, or type it. The window sits beside the cursor, then closes and forgets the result.
+Vela is a Windows selection translator. Select text and a small window appears next to the cursor to translate, explain, polish, or read it aloud. It closes when you are done and does not remember the result.
 
 ## 下载
 
-[Vela 0.1.0](https://github.com/JohnneyLee/vela/releases/latest) 里的 `vela.exe` 下载后即可运行，不必编译。
+最新版本 **0.1.2**，安装包 `Vela_0.1.2_x64-setup.exe`（NSIS，约 8 MB）。从 [GitHub Releases](https://github.com/JohnneyLee/vela/releases) 下载后双击安装即可，不需要编译。
 
-需要 Windows 10 或 Windows 11。Windows 11 已带 WebView2。程序没有代码签名，第一次打开时 Windows 可能提示未知发布者。
+需要 Windows 10 或 Windows 11。Windows 11 自带 WebView2；Windows 10 若提示缺少 WebView2，按提示安装即可。程序没有代码签名，第一次运行时 Windows SmartScreen 可能提示「未知发布者」，点「仍要运行」即可。
 
 ## Download
 
-Download `vela.exe` from [Vela 0.1.0](https://github.com/JohnneyLee/vela/releases/latest) and run it. No build step.
+Version **0.1.2**, installer `Vela_0.1.2_x64-setup.exe` (NSIS, ~8 MB). Download it from [GitHub Releases](https://github.com/JohnneyLee/vela/releases) and double-click to install; no build step.
 
-Windows 10 or 11. Windows 11 already includes WebView2. The executable is unsigned, so Windows may show an unknown-publisher prompt the first time.
+Windows 10 or 11. Windows 11 includes WebView2. The program is unsigned, so SmartScreen may show an unknown-publisher warning the first time; choose "Run anyway".
+
+## 功能
+
+- **取词翻译**：选中文字，旁边出现操作条（译 / 释 / 润 / 读）。程序按内容自动推荐高亮哪一项：单词推荐「释」，可编辑文本推荐「润」，其余推荐「译」。
+- **四类操作**：翻译、解释（含词性/音标/例句）、润色（三档力度，逐词对比，可问「为什么这样改」）、朗读。
+- **机器翻译**：Google、MyMemory、DeepL、离线（OPUS-MT）。
+- **AI 翻译**：免费公共服务、DeepSeek、OpenAI、Moonshot Kimi、Google Gemini、Ollama（本机）。
+- **对照显示**：并排对照 / AI 优先 / 机器翻译优先 / 自动，四档可切换。
+- **写回与撤销**：在可编辑的窗口里，可把译文替换回原文处，并支持撤销。
+- **主题**：跟随系统 / 浅色 / 深色 / 护眼绿 / 暖色米黄。
+- **母语设置**：中文 / English / 日本語，决定翻译方向（原文是母语时译成英文，否则译成母语）。
+- **完全本地模式**：只用离线翻译和 Ollama，不把文字发到任何外网服务。
 
 ## 使用
 
-选中文字后，旁边出现一个圆标。点击它，或按 `Ctrl+Alt+T`。也可以在窗口里打字，按回车翻译。
+- **划词**：选中文字，点操作条上的按钮（或直接按快捷键）打开结果。
+- **快捷键**：`Ctrl+Alt+T` 取当前选中文字。
+- **翻译剪贴板**：`Ctrl+Alt+Shift+T` 读取一次剪贴板里的文字并翻译（可在设置里改这个快捷键）。
+- **手动输入**：在结果窗里直接打字，回车翻译。
+- **关闭**：点 × 或按 `Esc`，清掉这一轮的原文和译文。
 
-译文分上下两栏，各自请求。上面是机器翻译：Google、MyMemory、离线。下面是对照：免费测试、DeepSeek、DeepL。只更换一边时，另一边不会重查。Google 和 MyMemory 都不通时，上面会改用离线模型。离线模型第一次使用时需要下载，之后留在本机。
+## 隐私
 
-DeepSeek 和 DeepL 需要你自己的 Key。填一次后保存在本机，下次不用再填。点 × 或按 `Esc` 关闭窗口，并清掉这一次的原文和译文。托盘菜单可以退出，也可以勾选开机启动。
+原文和译文都不写入磁盘、不写进日志。文字会发送到对应的翻译服务：
 
-以管理员身份运行的窗口里，普通程序发不出复制按键，选中后可能没有圆标。
+| 服务 | 文字发往 | 是否需要 Key |
+| --- | --- | --- |
+| Google 机器翻译 | translate.googleapis.com | 否 |
+| MyMemory | api.mymemory.translated.net | 否 |
+| DeepL | api.deepl.com | 是 |
+| 免费 AI | text.pollinations.ai | 否 |
+| DeepSeek | api.deepseek.com | 是 |
+| OpenAI | api.openai.com | 是 |
+| Moonshot Kimi | api.moonshot.cn | 是 |
+| Google Gemini | generativelanguage.googleapis.com | 是 |
+| Ollama | 本机 localhost:11434 | 否 |
+| 离线翻译 | 本机（首次使用会从 Hugging Face 下载模型） | 否 |
 
-## Use
+- **完全本地模式**：只使用离线翻译和 Ollama，不发送任何文字到外网。注意：离线模型第一次使用时需要联网下载一次，之后留在本机。
+- **API Key**：用 Windows 的加密接口（DPAPI）保存在本机，只和你当前的 Windows 账户绑定，不写进设置文件，也不出现在日志里。
 
-After you select text, a round icon appears beside it. Click the icon, or press `Ctrl+Alt+T`. You can also type in the window and press Enter.
+## 已知限制
 
-The result is two independent rows. The top row is machine translation: Google, MyMemory, or offline. The bottom row is a comparison: a free test model, DeepSeek, or DeepL. Changing one row does not rerun the other. If Google and MyMemory both fail, the top row falls back to the offline model. The offline model downloads on first use and then stays on the computer.
-
-DeepSeek and DeepL use your own key. Enter it once and it stays on this computer, so later translations do not ask again. Close the window with × or `Esc`. That clears the text from this turn. The tray menu can quit the app or turn on launch at login.
-
-In a window running as administrator, a normal program cannot send the copy keystroke, so the icon may not appear.
+- 程序没有代码签名，会触发 SmartScreen 警告。
+- 暂无截图翻译（OCR）；遇到不支持直接取词的软件，可以手动复制文字，再按 `Ctrl+Alt+Shift+T`。
+- 以管理员权限运行的窗口里，普通权限的 Vela 无法发送复制按键，取不到词；可以给 Vela 管理员权限，或手动复制后翻译剪贴板。
 
 ## 从源码构建
 
@@ -51,7 +77,7 @@ npm run tauri dev
 npm run tauri build
 ```
 
-NSIS 安装包在 `src-tauri/target/release/bundle/nsis/`。
+NSIS 安装包生成在 `src-tauri/target/release/bundle/nsis/`。
 
 ## Build from source
 
@@ -71,9 +97,5 @@ npm run tauri build
 The NSIS installer is written to `src-tauri/target/release/bundle/nsis/`.
 
 ## 许可
-
-[MIT](LICENSE)
-
-## License
 
 [MIT](LICENSE)
