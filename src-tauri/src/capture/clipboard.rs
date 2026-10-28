@@ -66,6 +66,7 @@ pub fn backup() -> Result<Snapshot, String> {
         }
         if attempts >= backoff_ms.len() {
             let holder = open_holder_name();
+            super::log::log_capture("", "copy", "occupied", 0, &holder);
             return Err(if holder.is_empty() {
                 "剪贴板被其他程序占用，请稍后重试。".to_string()
             } else {

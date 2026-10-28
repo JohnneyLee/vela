@@ -5,6 +5,7 @@ pub(crate) mod context;
 mod copykey;
 mod error;
 pub(crate) mod input;
+mod log;
 pub(crate) mod uia;
 
 pub use error::{sanitize, CaptureError, Outcome};
@@ -83,20 +84,32 @@ pub fn probe() -> Option<String> {
 }
 
 fn try_capture(allow_partial: bool) -> Outcome {
+    let _active = log::ActiveCapture::start();
     let started = Instant::now();
     let ctx = context::collect();
 
     let uia = uia::uia_selection();
     match uia {
         Outcome::Text { .. } => {
-            eprintln!(
-                "[vela-capture] via=uia exe={} ms={}",
-                ctx.exe,
-                started.elapsed().as_millis()
+            log::log_capture(
+                &ctx.exe,
+                "uia",
+                "success",
+                started.elapsed().as_millis(),
+                "",
             );
             return uia;
         }
-        Outcome::Failed(CaptureError::PasswordField) => return uia,
+        Outcome::Failed(CaptureError::PasswordField) => {
+            log::log_capture(
+                &ctx.exe,
+                "uia",
+                "password",
+                started.elapsed().as_millis(),
+                "",
+            );
+            return uia;
+        }
         Outcome::Failed(_) => {} // fall through to copy
         Outcome::NoSelection | Outcome::Unsupported => {} // fall through to copy
     }
@@ -107,10 +120,35 @@ fn try_capture(allow_partial: bool) -> Outcome {
     } else {
         "none"
     };
-    eprintln!(
-        "[vela-capture] via={via} exe={} ms={}",
-        ctx.exe,
-        started.elapsed().as_millis()
+    log::log_capture(
+        &ctx.exe,
+        via,
+        outcome_result(&copy),
+        started.elapsed().as_millis(),
+        "",
     );
     copy
+}
+
+fn outcome_result(outcome: &Outcome) -> &'static str {
+    match outcome {
+        Outcome::Text { .. } => "success",
+        Outcome::NoSelection => "no_selection",
+        Outcome::Unsupported => "unsupported",
+        Outcome::Failed(err) => match err {
+            CaptureError::Timeout => "timeout",
+            CaptureError::PasswordField => "password",
+            CaptureError::ElevatedTarget => "elevated",
+            CaptureError::InputBlocked => "input_blocked",
+            CaptureError::NoSelection => "no_selection",
+            CaptureError::Unsupported => "unsupported",
+            CaptureError::Other(msg) => {
+                if msg.contains("占用") {
+                    "occupied"
+                } else {
+                    "other"
+                }
+            }
+        },
+    }
 }
