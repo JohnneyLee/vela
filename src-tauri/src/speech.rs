@@ -3,9 +3,28 @@
 //! ever pass through shell quoting or argument encoding.
 
 use std::os::windows::process::CommandExt;
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::sync::Mutex;
 
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+/// PID of the in-flight read-aloud process. Held so a second tap can stop the
+/// previous voice before starting a new one, instead of both talking at once.
+static PLAYER_PID: Mutex<Option<u32>> = Mutex::new(None);
+
+/// Kill the currently-playing voice (if any) before starting a new one.
+fn stop_previous() {
+    let pid = match PLAYER_PID.lock() {
+        Ok(mut guard) => guard.take(),
+        Err(_) => None,
+    };
+    if let Some(pid) = pid {
+        let _ = Command::new("taskkill.exe")
+            .args(["/PID", &pid.to_string(), "/T", "/F"])
+            .creation_flags(CREATE_NO_WINDOW)
+            .output();
+    }
+}
 
 /// 按指定语言朗读。`lang` 传 "zh"/"en"/"ja" 时用对应语音；
 /// 传 "auto" 时按文字内容自动判断（含日文假名 → 日语）。
@@ -35,7 +54,9 @@ pub fn speak_with_lang(text: &str, lang: &str) -> Result<(), String> {
            if ([string]::IsNullOrWhiteSpace($t)) {{ exit 0 }}; \
            Add-Type -AssemblyName System.Speech; \
            $s = New-Object System.Speech.Synthesis.SpeechSynthesizer; \
-           $v = $s.GetInstalledVoices() | Where-Object {{ $_.VoiceInfo.Culture.Name -like '{lang}*' }} | Select-Object -First 1; \
+           $voices = @($s.GetInstalledVoices()); \
+           if ($voices.Count -eq 0) {{ exit 2 }}; \
+           $v = $voices | Where-Object {{ $_.VoiceInfo.Culture.Name -like '{lang}*' }} | Select-Object -First 1; \
            if ($v) {{ $s.SelectVoice($v.VoiceInfo.Name) }}; \
            $s.Speak($t) \
          }} catch {{ \
@@ -45,7 +66,10 @@ pub fn speak_with_lang(text: &str, lang: &str) -> Result<(), String> {
     );
 
     let encoded = b64_encode(&encode_utf16le(&script));
-    let output = Command::new("powershell.exe")
+
+    stop_previous();
+
+    let mut child = Command::new("powershell.exe")
         .args([
             "-NoProfile",
             "-NonInteractive",
@@ -53,30 +77,48 @@ pub fn speak_with_lang(text: &str, lang: &str) -> Result<(), String> {
             &encoded,
         ])
         .creation_flags(CREATE_NO_WINDOW)
-        .output();
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|err| format!("无法启动朗读：{err}"))?;
+
+    let pid = child.id();
+    {
+        let mut guard = PLAYER_PID.lock().unwrap();
+        *guard = Some(pid);
+    }
+
+    let output = child
+        .wait_with_output()
+        .map_err(|err| format!("朗读出错：{err}"))?;
+
+    {
+        let mut guard = PLAYER_PID.lock().unwrap();
+        if *guard == Some(pid) {
+            *guard = None;
+        }
+    }
 
     // The temp file is deleted here as a fallback (the script no longer deletes it).
     let _ = std::fs::remove_file(&path);
 
-    match output {
-        Ok(out) => {
-            // Only a non-zero exit code is a failure. stderr may carry harmless
-            // progress/noise even on success, so ignore it unless the script
-            // actually failed (try/catch exits 1 on a real error).
-            if !out.status.success() {
-                let stderr = String::from_utf8_lossy(&out.stderr);
-                let msg = stderr
-                    .lines()
-                    .filter(|l| !l.trim().is_empty())
-                    .last()
-                    .map(|l| l.trim().to_string())
-                    .unwrap_or_else(|| "朗读失败。请检查系统的音频输出设备。".into());
-                Err(format!("朗读失败：{msg}"))
-            } else {
-                Ok(())
-            }
+    if !output.status.success() {
+        // Exit code 2 = no installed voices at all.
+        if output.status.code() == Some(2) {
+            return Err(
+                "系统没有安装语音。请打开「设置 → 时间和语言 → 语音」添加语音后重试。".into(),
+            );
         }
-        Err(err) => Err(format!("无法启动朗读：{err}")),
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let msg = stderr
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .last()
+            .map(|l| l.trim().to_string())
+            .unwrap_or_else(|| "朗读失败。请检查系统的音频输出设备。".into());
+        Err(format!("朗读失败：{msg}"))
+    } else {
+        Ok(())
     }
 }
 
