@@ -118,6 +118,29 @@ pub fn is_black(pixels: &[u8]) -> bool {
     })
 }
 
+/// Crop an RGBA region out of the capture. Coordinates are physical pixels
+/// relative to the capture's top-left corner.
+pub fn crop_rgba(
+    cap: &ScreenCapture,
+    x: i32,
+    y: i32,
+    w: i32,
+    h: i32,
+) -> (Vec<u8>, i32, i32) {
+    let x = x.clamp(0, cap.width - 1);
+    let y = y.clamp(0, cap.height - 1);
+    let w = w.clamp(1, cap.width - x);
+    let h = h.clamp(1, cap.height - y);
+    let mut out = vec![0u8; (w as usize) * (h as usize) * 4];
+    for row in 0..h {
+        let src = ((y + row) * cap.width + x) as usize * 4;
+        let dst = row as usize * w as usize * 4;
+        let len = w as usize * 4;
+        out[dst..dst + len].copy_from_slice(&cap.pixels[src..src + len]);
+    }
+    (out, w, h)
+}
+
 /// Base64-encode RGBA pixel bytes for transfer to the overlay webview.
 pub fn encode_base64(bytes: &[u8]) -> String {
     const TABLE: &[u8; 64] =

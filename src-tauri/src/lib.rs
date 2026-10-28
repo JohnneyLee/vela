@@ -1,5 +1,6 @@
 mod capture;
 mod dpapi;
+mod ocr;
 mod offline;
 mod picker;
 mod screenshot;
@@ -15,6 +16,7 @@ mod writeback;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 
+use crate::ocr::Recognizer;
 use serde::Serialize;
 use tauri::{
     menu::{CheckMenuItem, Menu, MenuItem},
@@ -236,16 +238,52 @@ fn get_screenshot() -> Result<ScreenshotPayload, String> {
     })
 }
 
-/// 框选结束：前端把选中矩形（物理像素，相对虚拟桌面原点）传回来。
-/// O1 阶段只记录矩形并关闭框选层；O2 在这里接文字识别。
+/// 框选结束：裁剪选中区域，识别文字。O2 阶段把识别出的文字送到结果窗
+/// 显示（O5 再改成盖回原位）。
 #[tauri::command]
-fn overlay_select(app: tauri::AppHandle, x: i32, y: i32, width: i32, height: i32) -> Result<(), String> {
-    close_overlay(&app);
-    // 矩形相对虚拟桌面原点；O2 用它在内存里的截图上做 OCR。
+async fn overlay_select(
+    app: tauri::AppHandle,
+    x: i32,
+    y: i32,
+    width: i32,
+    height: i32,
+) -> Result<(), String> {
     if width <= 0 || height <= 0 {
+        close_overlay(&app);
         return Err("框选区域太小。".into());
     }
-    eprintln!("[vela-ocr] select x={x} y={y} w={width} h={height}");
+    // 先从内存截图里裁剪，再关闭框选层并清空截图。
+    let cropped = {
+        let guard = SCREENSHOT.lock().map_err(|e| e.to_string())?;
+        guard
+            .as_ref()
+            .map(|cap| screenshot::crop_rgba(cap, x, y, width, height))
+    };
+    close_overlay(&app);
+    let (pixels, w, h) = cropped.ok_or("没有可用的截图。")?;
+
+    let lines = tauri::async_runtime::spawn_blocking(move || {
+        let engine = ocr::WindowsOcr;
+        engine.recognize(&pixels, w, h)
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+
+    if lines.is_empty() {
+        place_and_show(&app);
+        let _ = app.emit("selection-error", "没有识别到文字。".to_string());
+        return Ok(());
+    }
+    let text = lines
+        .iter()
+        .map(|l| l.text.clone())
+        .collect::<Vec<_>>()
+        .join("\n");
+    place_and_show(&app);
+    let _ = app.emit(
+        "selection-captured",
+        SelectionPayload { text, action: "translate".into(), editable: false },
+    );
     Ok(())
 }
 
