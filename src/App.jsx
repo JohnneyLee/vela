@@ -90,6 +90,7 @@ function App() {
   const [mtStatus, setMtStatus] = createSignal("idle");
   const [aiStatus, setAiStatus] = createSignal("idle");
   const [error, setError] = createSignal("");
+  const [suggestScreenshot, setSuggestScreenshot] = createSignal(false);
   const [meta, setMeta] = createSignal("");
   const [mtSource, setMtSource] = createSignal("google");
   const [aiSource, setAiSource] = createSignal("free");
@@ -573,7 +574,23 @@ function App() {
       setMeta("");
       setMtStatus("idle");
       setAiStatus("idle");
+      setSuggestScreenshot(false);
       setError(typeof event.payload === "string" ? event.payload : "取词失败");
+    }).then((unsub) => unsubs.push(unsub));
+
+    // 取词失败：提示里带「截图翻译」按钮（O7）。
+    listen("capture-error", (event) => {
+      mtGeneration += 1;
+      aiGeneration += 1;
+      setSource("");
+      clearMt();
+      clearAi();
+      setMeta("");
+      setMtStatus("idle");
+      setAiStatus("idle");
+      const p = event.payload;
+      setError(typeof p?.message === "string" ? p.message : "取词失败");
+      setSuggestScreenshot(Boolean(p?.suggestScreenshot));
     }).then((unsub) => unsubs.push(unsub));
 
     listen("result-dismissed", () => {
@@ -747,7 +764,18 @@ function App() {
 
       {/* 错误横幅 */}
       <Show when={actionMsg() || error()}>
-        <div class="banner">{actionMsg() || error()}</div>
+        <div class="banner">
+          {actionMsg() || error()}
+          <Show when={!actionMsg() && suggestScreenshot()}>
+            <button
+              type="button"
+              class="banner-btn"
+              onClick={() => invoke("screenshot_translate")}
+            >
+              截图翻译
+            </button>
+          </Show>
+        </div>
       </Show>
 
       {/* 手动输入框（仅手动打开时） */}

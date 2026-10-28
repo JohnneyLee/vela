@@ -113,10 +113,12 @@ fn format_shortcut(sc: &Shortcut) -> String {
     parts.join("+")
 }
 
-/// 把错误提示里的 {shortcut} 占位符替换成当前「翻译剪贴板」快捷键。
+/// 把错误提示里的 {shortcut} 和 {screenshot} 占位符替换成当前快捷键。
 fn fill_shortcut(msg: String) -> String {
-    let sc = format_shortcut(&current_clipboard_shortcut());
-    msg.replace("{shortcut}", &sc)
+    let clip = format_shortcut(&current_clipboard_shortcut());
+    let shot = format_shortcut(&current_screenshot_shortcut());
+    msg.replace("{shortcut}", &clip)
+        .replace("{screenshot}", &shot)
 }
 
 /// 让「设置页开关」和「托盘菜单勾选」能互相改对方：保存托盘里的
@@ -130,6 +132,14 @@ struct SelectionPayload {
     action: String,
     #[serde(default)]
     editable: bool,
+}
+
+/// 取词失败提示：文案 + 是否建议进入截图翻译（前端据此显示按钮）。
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct CaptureErrorPayload {
+    message: String,
+    suggest_screenshot: bool,
 }
 
 #[derive(Serialize, Clone)]
@@ -255,6 +265,12 @@ fn start_screenshot(app: &tauri::AppHandle) {
             let _ = window.set_focus();
         }
     });
+}
+
+/// 前端入口（取词失败提示里的按钮 / 托盘菜单）触发的截图翻译。
+#[tauri::command]
+fn screenshot_translate(app: tauri::AppHandle) {
+    start_screenshot(&app);
 }
 
 /// 把全屏截图交给 overlay 前端显示。
@@ -773,7 +789,13 @@ fn bar_pick(app: tauri::AppHandle, action: String) {
             }
             Err(err) => {
                 place_and_show(&app);
-                let _ = app.emit("selection-error", fill_shortcut(err));
+                let _ = app.emit(
+                    "capture-error",
+                    CaptureErrorPayload {
+                        message: fill_shortcut(err),
+                        suggest_screenshot: true,
+                    },
+                );
             }
         }
     });
@@ -967,7 +989,13 @@ pub(crate) fn on_hotkey(app: &tauri::AppHandle) {
             }
             Err(err) => {
                 place_and_show(&app);
-                let _ = app.emit("selection-error", fill_shortcut(err));
+                let _ = app.emit(
+                    "capture-error",
+                    CaptureErrorPayload {
+                        message: fill_shortcut(err),
+                        suggest_screenshot: true,
+                    },
+                );
             }
         }
         CAPTURING.store(false, Ordering::SeqCst);
@@ -1027,7 +1055,8 @@ pub fn run() {
             app.manage(AutostartState(Mutex::new(Some(autostart.clone()))));
             let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
             let settings_item = MenuItem::with_id(app, "settings", "设置", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&settings_item, &autostart, &quit])?;
+            let screenshot_item = MenuItem::with_id(app, "screenshot", "截图翻译", true, None::<&str>)?;
+            let menu = Menu::with_items(app, &[&screenshot_item, &settings_item, &autostart, &quit])?;
             let mut tray = TrayIconBuilder::new()
                 .tooltip("Vela")
                 .menu(&menu)
@@ -1037,6 +1066,8 @@ pub fn run() {
                         app.exit(0);
                     } else if event.id.as_ref() == "settings" {
                         windows::open_settings(app);
+                    } else if event.id.as_ref() == "screenshot" {
+                        start_screenshot(app);
                     } else if event.id.as_ref() == "autostart" {
                         let autolaunch = app.autolaunch();
                         let enabled = autolaunch.is_enabled().unwrap_or(false);
@@ -1178,7 +1209,8 @@ pub fn run() {
             get_pinned_result,
             close_pinned,
             overlay_select,
-            overlay_cancel
+            overlay_cancel,
+            screenshot_translate
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -1227,6 +1259,21 @@ mod tests {
         }
         let msg = fill_shortcut("不支持。可按 {shortcut} 翻译。".to_string());
         assert!(msg.contains("Ctrl+Alt+Shift+T"));
+        assert!(!msg.contains("{shortcut}"));
+    }
+
+    #[test]
+    fn fill_shortcut_replaces_screenshot_placeholder() {
+        if let Ok(mut guard) = SCREENSHOT_SHORTCUT
+            .get_or_init(|| Mutex::new(default_screenshot_shortcut()))
+            .lock()
+        {
+            *guard = default_screenshot_shortcut();
+        }
+        let msg = fill_shortcut("可按 {screenshot} 截图翻译，或按 {shortcut} 翻译剪贴板。".to_string());
+        assert!(msg.contains("Ctrl+Alt+S"));
+        assert!(msg.contains("Ctrl+Alt+Shift+T"));
+        assert!(!msg.contains("{screenshot}"));
         assert!(!msg.contains("{shortcut}"));
     }
 }
