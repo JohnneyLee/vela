@@ -6,7 +6,7 @@ Vela is a Windows selection translator. Select text and a small window appears n
 
 ## 下载
 
-最新版本 **0.1.2**，安装包 `Vela_0.1.2_x64-setup.exe`（NSIS，约 8 MB）。从 [GitHub Releases](https://github.com/JohnneyLee/vela/releases) 下载后双击安装即可，不需要编译。
+从 [GitHub Releases](https://github.com/JohnneyLee/vela/releases) 下载后双击安装即可，不需要编译。
 
 需要 Windows 10 或 Windows 11。Windows 11 自带 WebView2；Windows 10 若提示缺少 WebView2，按提示安装即可。程序没有代码签名，第一次运行时 Windows SmartScreen 可能提示「未知发布者」，点「仍要运行」即可。
 
