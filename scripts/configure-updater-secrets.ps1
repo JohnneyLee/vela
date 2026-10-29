@@ -23,7 +23,7 @@ function Set-GitHubSecret([string]$name, [string]$value, [string]$repo) {
   $start.RedirectStandardInput = $true
   $start.RedirectStandardOutput = $true
   $start.RedirectStandardError = $true
-  foreach ($argument in @("secret", "set", $name, "--repo", $repo)) {
+  foreach ($argument in @("secret", "set", $name, "--env", "release", "--repo", $repo)) {
     $start.ArgumentList.Add($argument)
   }
 
@@ -38,7 +38,7 @@ function Set-GitHubSecret([string]$name, [string]$value, [string]$repo) {
   if ($process.ExitCode -ne 0) {
     throw "Could not configure GitHub Actions secret $name. Check 'gh auth status' and repository permissions. $stderr"
   }
-  Write-Output "Configured $name for $repo."
+  Write-Output "Configured $name for the release environment in $repo."
 }
 
 $encryptedPassword = (Get-Content -Raw -LiteralPath $protectedPasswordPath).Trim()
