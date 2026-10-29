@@ -106,6 +106,29 @@
   color: var(--ac);
 }
 
+/* 等待用户选择功能：四个字都可点、略强调 */
+.mode-tabs.choose .mode-tab.choose {
+  color: var(--tx);
+  background: var(--hv);
+  box-shadow: inset 0 0 0 1px var(--ln);
+}
+
+.mode-tabs.choose .mode-tab.choose:hover {
+  background: var(--acs);
+  color: var(--ac);
+  box-shadow: inset 0 0 0 1px var(--ac);
+}
+
+.choose-hint {
+  margin: 0 14px 8px;
+  padding: 8px 10px;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--ac);
+  background: var(--acs);
+  border-radius: var(--radius-btn);
+}
+
 .icon-btn {
   width: 30px;
   height: 30px;
@@ -468,6 +491,77 @@
   color: var(--tx);
   border: 1px solid var(--ln);
   border-radius: var(--radius-btn);
+}
+
+/* 润色：预设 + 自定义要求 */
+.polish-req {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.polish-presets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.polish-chip {
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.2;
+  padding: 4px 9px;
+  border-radius: var(--radius-btn);
+  border: 1px solid var(--ln);
+  background: transparent;
+  color: var(--tx);
+  cursor: pointer;
+}
+
+.polish-chip:hover {
+  background: var(--cd);
+}
+
+.polish-chip.active {
+  background: var(--cd);
+  border-color: var(--tx);
+}
+
+.polish-input {
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.4;
+  width: 100%;
+  min-height: 52px;
+  resize: vertical;
+  padding: 8px 10px;
+  border: 1px solid var(--ln);
+  border-radius: var(--radius-btn);
+  background: var(--cd);
+  color: var(--tx);
+  box-sizing: border-box;
+}
+
+.polish-input:focus {
+  outline: 1px solid var(--tx);
+  outline-offset: 0;
+}
+
+.polish-req-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.polish-hint {
+  font-size: 11px;
+  color: var(--mu, #888);
+}
+
+.polish-run {
+  flex-shrink: 0;
 }
 
 /* 窄窗口：隐藏左侧方向文字，语言方向仍可见于结果标签 */

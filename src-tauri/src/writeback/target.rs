@@ -7,7 +7,10 @@ use std::thread;
 use std::time::Duration;
 
 use windows::Win32::Foundation::HWND;
-use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowThreadProcessId, SetForegroundWindow};
+use windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
+use windows::Win32::UI::WindowsAndMessaging::{
+    GetForegroundWindow, GetWindowThreadProcessId, SetForegroundWindow,
+};
 
 static SOURCE_HWND: AtomicIsize = AtomicIsize::new(0);
 static SOURCE_PID: AtomicU32 = AtomicU32::new(0);
@@ -62,16 +65,34 @@ pub fn switch_back_and_verify() -> Result<u32, String> {
     let pid = SOURCE_PID.load(Ordering::Relaxed);
 
     unsafe {
+        let fg = GetForegroundWindow();
+        let fg_tid = GetWindowThreadProcessId(fg, None);
+        let target_tid = GetWindowThreadProcessId(hwnd, None);
+        let cur = GetCurrentThreadId();
+        // AttachThreadInput 提高 SetForegroundWindow 成功率（Cursor 尤其需要）。
+        let attached = fg_tid != 0 && target_tid != 0 && fg_tid != target_tid;
+        if attached {
+            let _ = AttachThreadInput(fg_tid, target_tid, true);
+            let _ = AttachThreadInput(cur, target_tid, true);
+        }
         let _ = SetForegroundWindow(hwnd);
+        if attached {
+            let _ = AttachThreadInput(cur, target_tid, false);
+            let _ = AttachThreadInput(fg_tid, target_tid, false);
+        }
     }
 
-    // Wait up to 300ms for the foreground window to become the target again.
-    for _ in 0..30 {
+    // Wait up to 500ms for the foreground window to become the target again.
+    for _ in 0..50 {
         unsafe {
             let fg = GetForegroundWindow();
             let mut fg_pid = 0u32;
             GetWindowThreadProcessId(fg, Some(&mut fg_pid));
             if fg.0 == hwnd.0 || (pid != 0 && fg_pid == pid) {
+                let exe = source_exe();
+                if crate::capture::is_electron_editor(&exe) {
+                    thread::sleep(Duration::from_millis(120));
+                }
                 return Ok(pid);
             }
         }

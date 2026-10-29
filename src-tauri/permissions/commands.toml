@@ -70,5 +70,40 @@ commands.allow = ["get_autostart", "set_autostart"]
 
 [[permission]]
 identifier = "allow-bar"
-description = "Allows showing/hiding the action bar."
-commands.allow = ["bar_pick", "bar_hide", "open_settings", "settings_close", "panel_resize"]
+description = "Allows handling action bar interactions."
+commands.allow = ["bar_pick", "bar_hide", "bar_layout"]
+
+[[permission]]
+identifier = "allow-open-settings"
+description = "Allows opening the settings window."
+commands.allow = ["open_settings"]
+
+[[permission]]
+identifier = "allow-settings-close"
+description = "Allows closing or hiding the settings window."
+commands.allow = ["settings_close"]
+
+[[permission]]
+identifier = "allow-panel-resize"
+description = "Allows resizing the translation panel."
+commands.allow = ["panel_resize"]
+
+[[permission]]
+identifier = "allow-screenshot-start"
+description = "Allows starting screenshot translation."
+commands.allow = ["screenshot_translate"]
+
+[[permission]]
+identifier = "allow-overlay"
+description = "Allows the screenshot overlay to read OCR data and submit a selection."
+commands.allow = ["get_screenshot", "get_ocr_result", "overlay_select", "overlay_cancel", "pin_result"]
+
+[[permission]]
+identifier = "allow-pinned-data"
+description = "Allows reading and closing a pinned OCR result."
+commands.allow = ["get_pinned_result", "close_pinned"]
+
+[[permission]]
+identifier = "allow-stop-speak"
+description = "Allows stopping current speech output."
+commands.allow = ["stop_speak"]

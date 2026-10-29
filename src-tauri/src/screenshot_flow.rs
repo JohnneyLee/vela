@@ -124,6 +124,76 @@ pub fn mt_translator(source: String, model_dir: PathBuf, deepl_key: String) -> A
     })
 }
 
+/// AI 段落翻译（截图盖回原位只能显示一路译文，按设置选用）。
+pub struct AiTranslator {
+    pub source: String,
+    pub style: Option<String>,
+    pub native: String,
+    pub keys: translate::ProviderKeys,
+}
+
+#[async_trait]
+impl BlockTranslator for AiTranslator {
+    async fn translate(&self, text: &str, target: &str) -> Result<String, String> {
+        let on_chunk = |_: String| {};
+        let (out, _service, err) = translate::translate_ai(
+            text,
+            target,
+            &self.source,
+            self.style.as_deref(),
+            "translate",
+            "standard",
+            "",
+            &self.native,
+            &self.keys,
+            &on_chunk,
+        )
+        .await;
+        if !err.is_empty() {
+            return Err(err);
+        }
+        let out = out.trim().to_string();
+        if out.is_empty() {
+            return Err("翻译返回空结果。".into());
+        }
+        Ok(out)
+    }
+}
+
+pub fn ai_translator(
+    source: String,
+    style: Option<String>,
+    native: String,
+    keys: translate::ProviderKeys,
+) -> Arc<dyn BlockTranslator> {
+    Arc::new(AiTranslator {
+        source,
+        style,
+        native,
+        keys,
+    })
+}
+
+/// 盖回原位只能显示一路译文：ai-first / compare 用 AI；mt-first 用机器翻译；
+/// auto 则有可用 AI（含免费 / Ollama）时用 AI，否则机器翻译。
+pub fn prefer_ai_for_overlay(display_mode: &str, ai_source: &str, keys: &translate::ProviderKeys) -> bool {
+    let ai_ready = match ai_source {
+        "free" | "ollama" => true,
+        "deepseek" => !keys.deepseek.is_empty(),
+        "openai" => !keys.openai.is_empty(),
+        "moonshot" => !keys.moonshot.is_empty(),
+        "gemini" => !keys.gemini.is_empty(),
+        "deepl" => !keys.deepl.is_empty(),
+        _ => false,
+    };
+    match display_mode {
+        "ai-first" | "compare" => ai_ready,
+        "mt-first" => false,
+        "auto" => ai_ready,
+        _ => false,
+    }
+}
+
 /// Translate every non-skipped paragraph concurrently, one request per block,
 /// then reorder the results by index so the reading order is preserved. A block
 /// that fails keeps its original text and records the error without blocking
@@ -132,6 +202,15 @@ pub async fn translate_paragraphs(
     paragraphs: Vec<Paragraph>,
     target: &'static str,
     translator: Arc<dyn BlockTranslator>,
+) -> Vec<TranslatedBlock> {
+    translate_paragraphs_with_concurrency(paragraphs, target, translator, 6).await
+}
+
+pub async fn translate_paragraphs_with_concurrency(
+    paragraphs: Vec<Paragraph>,
+    target: &'static str,
+    translator: Arc<dyn BlockTranslator>,
+    concurrency: usize,
 ) -> Vec<TranslatedBlock> {
     use futures_util::StreamExt;
 
@@ -154,9 +233,9 @@ pub async fn translate_paragraphs(
         });
     }
 
-    // Up to 6 in flight; the first block to finish is consumed first, but each
-    // result is written back to its own slot so the order never changes.
-    let mut stream = futures_util::stream::iter(jobs).buffer_unordered(6);
+    // AI 路径用 1：translate_ai 会 cancel 上一次请求，不能并行。
+    let concurrency = concurrency.max(1);
+    let mut stream = futures_util::stream::iter(jobs).buffer_unordered(concurrency);
     while let Some((i, result)) = stream.next().await {
         match result {
             Ok(text) => translated[i] = text,
@@ -254,6 +333,29 @@ mod tests {
         assert!(blocks[0].translated.is_empty());
         assert!(blocks[0].error.is_empty());
         assert_eq!(blocks[1].translated, "T:正文");
+    }
+
+    #[test]
+    fn prefer_ai_follows_display_mode() {
+        let keys = translate::ProviderKeys {
+            deepl: String::new(),
+            deepseek: "sk".into(),
+            openai: String::new(),
+            moonshot: String::new(),
+            gemini: String::new(),
+            ollama_model: String::new(),
+        };
+        assert!(prefer_ai_for_overlay("ai-first", "deepseek", &keys));
+        assert!(prefer_ai_for_overlay("compare", "free", &keys));
+        assert!(!prefer_ai_for_overlay("mt-first", "deepseek", &keys));
+        assert!(!prefer_ai_for_overlay("ai-first", "deepseek", &translate::ProviderKeys {
+            deepl: String::new(),
+            deepseek: String::new(),
+            openai: String::new(),
+            moonshot: String::new(),
+            gemini: String::new(),
+            ollama_model: String::new(),
+        }));
     }
 
     #[tokio::test]

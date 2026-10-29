@@ -56,6 +56,28 @@ pub struct Snapshot {
     pub restorable: bool,
 }
 
+impl Snapshot {
+    /// 备份里的纯文本（若有），供复制前后比对。
+    pub fn unicode_text(&self) -> Option<String> {
+        let fmt = CF_UNICODETEXT.0 as u32;
+        let bytes = self.items.iter().find(|(f, _)| *f == fmt)?.1.as_slice();
+        if bytes.len() < 2 {
+            return None;
+        }
+        let units: Vec<u16> = bytes
+            .chunks_exact(2)
+            .map(|c| u16::from_ne_bytes([c[0], c[1]]))
+            .collect();
+        let end = units.iter().position(|&u| u == 0).unwrap_or(units.len());
+        let text = String::from_utf16_lossy(&units[..end]);
+        if text.is_empty() {
+            None
+        } else {
+            Some(text)
+        }
+    }
+}
+
 pub fn backup() -> Result<Snapshot, String> {
     // Backoff so a briefly-held clipboard (clipboard managers, IMEs) can finish.
     let backoff_ms = [10u64, 20, 40, 80, 160, 320];

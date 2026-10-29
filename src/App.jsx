@@ -72,9 +72,36 @@ const MODES = [
   { id: "speak", label: "读" },
 ];
 
+/** 润色预设（少量）；其余用自定义要求。 */
+const POLISH_PRESETS = [
+  {
+    id: "light",
+    label: "只改错误",
+    level: "light",
+    instruction: "只修正拼写和语法错误，其余一律不要改。",
+  },
+  {
+    id: "standard",
+    label: "通顺自然",
+    level: "standard",
+    instruction: "改措辞和语序，删掉啰嗦重复，让表达自然精准，保留原意和全部信息。",
+  },
+  {
+    id: "heavy",
+    label: "大幅重写",
+    level: "heavy",
+    instruction: "可以大幅改写句子结构，让表达更流畅有力，但原意和全部信息必须保留。",
+  },
+  {
+    id: "shorten",
+    label: "压缩变短",
+    level: "heavy",
+    instruction: "在保留全部关键信息的前提下大幅压缩篇幅，去掉套话和重复。",
+  },
+];
+
 const AI_KEY_FLAGS = {
   deepseek: "hasDeepseekKey",
-  deepl: "hasDeeplKey",
   openai: "hasOpenaiKey",
   moonshot: "hasMoonshotKey",
   gemini: "hasGeminiKey",
@@ -86,6 +113,7 @@ function App() {
   const [mtService, setMtService] = createSignal("");
   const [mtError, setMtError] = createSignal("");
   const [aiText, setAiText] = createSignal("");
+  const [aiService, setAiService] = createSignal("");
   const [aiError, setAiError] = createSignal("");
   const [mtStatus, setMtStatus] = createSignal("idle");
   const [aiStatus, setAiStatus] = createSignal("idle");
@@ -94,7 +122,7 @@ function App() {
   const [meta, setMeta] = createSignal("");
   const [mtSource, setMtSource] = createSignal("google");
   const [aiSource, setAiSource] = createSignal("free");
-  const [hasDeeplKey, setHasDeeplKey] = createSignal(false);
+  const [localOnly, setLocalOnly] = createSignal(false);
   const [hasDeepseekKey, setHasDeepseekKey] = createSignal(false);
   const [hasOpenaiKey, setHasOpenaiKey] = createSignal(false);
   const [hasMoonshotKey, setHasMoonshotKey] = createSignal(false);
@@ -108,7 +136,29 @@ function App() {
   const [actionMsg, setActionMsg] = createSignal("");
   const [speaking, setSpeaking] = createSignal(false);
   const [polishLevel, setPolishLevel] = createSignal("standard");
+  /** 润色自定义要求；非空时优先于力度档位。默认填「通顺自然」。 */
+  const [polishInstruction, setPolishInstruction] = createSignal(
+    POLISH_PRESETS.find((p) => p.id === "standard").instruction,
+  );
+  const [polishPresetId, setPolishPresetId] = createSignal("standard");
   const [diffExplanation, setDiffExplanation] = createSignal("");
+
+  function applyPolishPreset(preset) {
+    setPolishPresetId(preset.id);
+    setPolishLevel(preset.level);
+    setPolishInstruction(preset.instruction);
+    if (source().trim() && mode() === "polish") translateSide("ai", source());
+  }
+
+  function onPolishInstructionInput(value) {
+    setPolishInstruction(value);
+    const match = POLISH_PRESETS.find((p) => p.instruction === value);
+    setPolishPresetId(match ? match.id : "custom");
+  }
+
+  function runPolishAgain() {
+    if (source().trim()) translateSide("ai", source());
+  }
   // UI state
   const [showSource, setShowSource] = createSignal(false);
   const [showOptions, setShowOptions] = createSignal(false);
@@ -121,6 +171,8 @@ function App() {
   const [primary, setPrimary] = createSignal("mt");
   // True while the AI is still generating after the 0.6s race fell back to MT.
   const [aiGenerating, setAiGenerating] = createSignal(false);
+  /** 已取词、等用户点顶部译/释/润/读，避免默认动作浪费请求。 */
+  const [awaitingChoice, setAwaitingChoice] = createSignal(false);
 
   const diffOps = createMemo(() => diffWords(source(), aiText()));
   const edited = {
@@ -141,16 +193,6 @@ function App() {
   let lastHeight = 0;
   const cardEl = () => document.getElementById("card");
 
-  function currentSettings() {
-    return {
-      mtSource: mtSource(),
-      aiSource: aiSource(),
-      sourceHeight: 72,
-      style: style(),
-      displayMode: displayMode(),
-    };
-  }
-
   function clearMt() {
     setMtText("");
     setMtService("");
@@ -159,6 +201,7 @@ function App() {
 
   function clearAi() {
     setAiText("");
+    setAiService("");
     setAiError("");
     setAiForSource("");
   }
@@ -179,12 +222,21 @@ function App() {
     setDiffExplanation("");
     setJustReplaced(false);
     setAiGenerating(false);
+    setAwaitingChoice(false);
   }
 
-  function saveSettings() {
+  function saveSettings(changedSetting) {
     if (!settingsLoaded) return Promise.resolve();
-    const settings = currentSettings();
-    const run = saveChain.catch(() => {}).then(() => invoke("save_settings", { settings }));
+    const run = saveChain.catch(() => {}).then(async () => {
+      // Other windows may have changed engines or options since this window
+      // loaded. Merge our fields into the latest persisted settings.
+      const settings = await invoke("get_settings");
+      if (changedSetting === "mtSource") settings.mtSource = mtSource();
+      if (changedSetting === "aiSource") settings.aiSource = aiSource();
+      if (changedSetting === "style") settings.style = style();
+      if (changedSetting === "displayMode") settings.displayMode = displayMode();
+      return invoke("save_settings", { settings });
+    });
     saveChain = run.catch(() => {});
     return run;
   }
@@ -196,7 +248,6 @@ function App() {
     if (!flag) return false;
     return (
       (s === "deepseek" && hasDeepseekKey()) ||
-      (s === "deepl" && hasDeeplKey()) ||
       (s === "openai" && hasOpenaiKey()) ||
       (s === "moonshot" && hasMoonshotKey()) ||
       (s === "gemini" && hasGeminiKey())
@@ -231,13 +282,12 @@ function App() {
       if (isMt ? ticket !== mtGeneration : ticket !== aiGeneration) return;
       const res = await invoke("translate_text", {
         text: trimmed,
-        mtSource: mtSource(),
-        aiSource: aiSource(),
         side,
         style: style(),
         direction: direction(),
         mode: mode(),
         polishLevel: polishLevel(),
+        polishInstruction: polishInstruction(),
         ticket,
       });
       if (isMt ? ticket !== mtGeneration : ticket !== aiGeneration) return;
@@ -250,6 +300,7 @@ function App() {
         setMtStatus(res?.mtError ? "error" : "done");
       } else {
         setAiText(res?.aiText ?? "");
+        setAiService(res?.aiService ?? "");
         setAiError(res?.aiError ?? "");
         setAiStatus(res?.aiError ? "error" : "done");
         setAiForSource(trimmed);
@@ -327,6 +378,7 @@ function App() {
   function runAction(action) {
     const text = source().trim();
     if (!text) return;
+    setAwaitingChoice(false);
     if (action === "speak") {
       const result = resultToSpeak();
       setMode("speak");
@@ -346,6 +398,28 @@ function App() {
       clearMt();
       translateSide("ai", text);
     }
+  }
+
+  function prepareChoice(text, editableFlag) {
+    mtGeneration += 1;
+    aiGeneration += 1;
+    setSource(text);
+    setFromSelection(true);
+    setEditable(Boolean(editableFlag));
+    setDiffExplanation("");
+    setJustReplaced(false);
+    setError("");
+    setSuggestScreenshot(false);
+    setMeta("");
+    clearMt();
+    clearAi();
+    setMtStatus("idle");
+    setAiStatus("idle");
+    setAiGenerating(false);
+    setMode("translate");
+    setShowSource(true);
+    setShowOptions(false);
+    setAwaitingChoice(true);
   }
 
   function swapResults() {
@@ -463,7 +537,7 @@ function App() {
       return;
     }
     edited[flag] = true;
-    saveSettings()
+    saveSettings(flag)
       .then(rerun)
       .catch(() => {});
   }
@@ -534,7 +608,7 @@ function App() {
         if (!settings) return;
         if (!edited.mtSource) setMtSource(settings.mtSource || "google");
         if (!edited.aiSource) setAiSource(settings.aiSource || "free");
-        setHasDeeplKey(Boolean(settings.hasDeeplKey));
+        setLocalOnly(Boolean(settings.localOnly));
         setHasDeepseekKey(Boolean(settings.hasDeepseekKey));
         setHasOpenaiKey(Boolean(settings.hasOpenaiKey));
         setHasMoonshotKey(Boolean(settings.hasMoonshotKey));
@@ -548,21 +622,36 @@ function App() {
         resolveSettingsReady();
       });
 
+    listen("translation-engines-changed", (event) => {
+      const settings = event.payload || {};
+      if (typeof settings.localOnly === "boolean") setLocalOnly(settings.localOnly);
+      if (settings.mtSource) {
+        edited.mtSource = true;
+        setMtSource(settings.mtSource);
+      }
+      if (settings.aiSource) {
+        edited.aiSource = true;
+        setAiSource(settings.aiSource);
+      }
+      setAiService("");
+    }).then((unsub) => unsubs.push(unsub));
+
     listen("selection-captured", (event) => {
       const raw = String(event.payload?.text ?? "");
       const text = normalizeWhitespace(raw);
       const action = String(event.payload?.action ?? "translate");
       // 手动方向只对这一次选择有效；新选择回到「自动」。
       setDirection("auto");
+      if (action === "choose" || action === "pick" || action === "none") {
+        prepareChoice(text, event.payload?.editable);
+        return;
+      }
+      setAwaitingChoice(false);
       setSource(text);
       setFromSelection(true);
       setEditable(Boolean(event.payload?.editable));
       setDiffExplanation("");
-      if (action && action !== "translate") {
-        runAction(action);
-      } else {
-        runAction("translate");
-      }
+      runAction(action || "translate");
     }).then((unsub) => unsubs.push(unsub));
 
     listen("selection-error", (event) => {
@@ -668,11 +757,9 @@ function App() {
   }
 
   function aiEngineLabel() {
-    switch (aiSource()) {
+    switch (aiService() || aiSource()) {
       case "deepseek":
         return "DeepSeek";
-      case "deepl":
-        return "DeepL";
       case "openai":
         return "OpenAI";
       case "moonshot":
@@ -737,13 +824,17 @@ function App() {
         <div class="head-left" title="语言方向">
           {headLabel()}
         </div>
-        <div class="mode-tabs">
+        <div class="mode-tabs" classList={{ choose: awaitingChoice() }}>
           {MODES.map((m) => (
             <button
               type="button"
               class="mode-tab"
-              classList={{ active: mode() === m.id }}
-              aria-label={modeLabel()}
+              classList={{
+                active: !awaitingChoice() && mode() === m.id,
+                choose: awaitingChoice(),
+              }}
+              aria-label={m.label}
+              title={awaitingChoice() ? `执行「${m.label}」` : undefined}
               onClick={() => {
                 if (source().trim()) runAction(m.id);
               }}
@@ -761,6 +852,10 @@ function App() {
           </button>
         </div>
       </header>
+
+      <Show when={awaitingChoice() && source()}>
+        <div class="choose-hint">已取到文字 — 点上方「译 / 释 / 润 / 读」再执行，避免跑错浪费请求</div>
+      </Show>
 
       {/* 错误横幅 */}
       <Show when={actionMsg() || error()}>
@@ -917,6 +1012,41 @@ function App() {
 
         {/* 解释/润色：单一 AI 结果 */}
         <Show when={mode() === "explain" || mode() === "polish"}>
+          <Show when={mode() === "polish"}>
+            <div class="polish-req">
+              <div class="polish-presets">
+                {POLISH_PRESETS.map((p) => (
+                  <button
+                    type="button"
+                    class="polish-chip"
+                    classList={{ active: polishPresetId() === p.id }}
+                    onClick={() => applyPolishPreset(p)}
+                  >
+                    {p.label}
+                  </button>
+                ))}
+              </div>
+              <textarea
+                class="polish-input"
+                rows={2}
+                placeholder="自己写要求，例如：改成会议纪要、语气更委婉、删掉重复…"
+                value={polishInstruction()}
+                onInput={(e) => onPolishInstructionInput(e.currentTarget.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
+                    e.preventDefault();
+                    runPolishAgain();
+                  }
+                }}
+              />
+              <div class="polish-req-foot">
+                <span class="polish-hint">Ctrl+Enter 按当前要求重新生成</span>
+                <button type="button" class="act polish-run" onClick={runPolishAgain}>
+                  按要求改写
+                </button>
+              </div>
+            </div>
+          </Show>
           <div class="result-label">AI · {aiEngineLabel()}</div>
           <Show when={aiStatus() === "loading" && !aiText()}>
             <div class="skeleton"><div class="sk" /><div class="sk" /></div>
@@ -986,6 +1116,7 @@ function App() {
             <label class="opt-row">
               <span>机器翻译</span>
               <select
+                disabled={localOnly()}
                 value={mtSource()}
                 onChange={(e) => onSetting("mtSource", () => setMtSource(e.currentTarget.value))}
               >
@@ -1006,28 +1137,11 @@ function App() {
               </select>
             </label>
           </Show>
-          <Show when={mode() === "polish"}>
-            <label class="opt-row">
-              <span>力度</span>
-              <select
-                value={polishLevel()}
-                onChange={(e) => {
-                  setPolishLevel(e.currentTarget.value);
-                  if (source().trim()) translateSide("ai", source());
-                }}
-              >
-                <option value="light">只改错误</option>
-                <option value="standard">标准</option>
-                <option value="heavy">大幅重写</option>
-              </select>
-            </label>
-          </Show>
           <label class="opt-row">
             <span>AI 引擎</span>
-            <select value={aiSource()} onChange={(e) => onSetting("aiSource", () => setAiSource(e.currentTarget.value))}>
+            <select disabled={localOnly()} value={aiSource()} onChange={(e) => onSetting("aiSource", () => setAiSource(e.currentTarget.value))}>
               <option value="free">免费</option>
               <option value="deepseek">DeepSeek</option>
-              <option value="deepl">DeepL</option>
               <option value="openai">OpenAI</option>
               <option value="moonshot">Moonshot</option>
               <option value="gemini">Gemini</option>

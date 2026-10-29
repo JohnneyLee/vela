@@ -1,0 +1,18 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "settings-window",
+  "description": "Settings window permissions",
+  "windows": ["settings"],
+  "permissions": [
+    "core:default",
+    "allow-get-settings",
+    "allow-save-settings",
+    "allow-save-key",
+    "allow-delete-key",
+    "allow-autostart",
+    "allow-test-ai-connection",
+    "allow-detect-ollama",
+    "allow-settings-close",
+    "updater:default"
+  ]
+}

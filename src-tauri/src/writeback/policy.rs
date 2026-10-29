@@ -56,7 +56,7 @@ pub fn for_exe(exe: &str) -> Policy {
             p.select_all = false;
             p.style = "formal";
         }
-        "code.exe" => {
+        "code.exe" | "cursor.exe" | "windsurf.exe" | "trae.exe" => {
             p.select_all = false;
         }
         "windowsterminal.exe" | "cmd.exe" | "powershell.exe" | "pwsh.exe" => {

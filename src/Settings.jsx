@@ -1,6 +1,7 @@
 import { createSignal, onCleanup, onMount, Show, For } from "solid-js";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { check } from "@tauri-apps/plugin-updater";
 import "./tokens.css";
 import "./settings.css";
 
@@ -70,7 +71,12 @@ function Settings() {
   const [testResult, setTestResult] = createSignal({});
   const [ollamaModels, setOllamaModels] = createSignal([]);
   const [ollamaModel, setOllamaModel] = createSignal("");
+  const [updateChecking, setUpdateChecking] = createSignal(false);
+  const [updateInstalling, setUpdateInstalling] = createSignal(false);
+  const [availableUpdate, setAvailableUpdate] = createSignal(null);
+  const [updateMessage, setUpdateMessage] = createSignal("");
   let toastTimer = 0;
+  let engineSettingsChangedDuringLoad = false;
 
   function showToast(text) {
     setToast(text);
@@ -80,6 +86,46 @@ function Settings() {
 
   function hasKey(id) {
     return Boolean(keys()[id]);
+  }
+
+  async function checkForUpdates() {
+    setUpdateChecking(true);
+    setUpdateMessage("正在检查更新…");
+    const previous = availableUpdate();
+    setAvailableUpdate(null);
+    if (previous) await previous.close().catch(() => {});
+    try {
+      const update = await check();
+      if (update) {
+        setAvailableUpdate(update);
+        setUpdateMessage("");
+      } else {
+        setUpdateMessage("当前已是最新版本。");
+      }
+    } catch (error) {
+      setUpdateMessage(`检查更新失败：${String(error)}`);
+    } finally {
+      setUpdateChecking(false);
+    }
+  }
+
+  async function installAvailableUpdate() {
+    const update = availableUpdate();
+    if (!update || updateInstalling()) return;
+    setUpdateInstalling(true);
+    setUpdateMessage("正在下载并安装更新…");
+    try {
+      await update.downloadAndInstall((event) => {
+        if (event.event === "Started") setUpdateMessage("正在下载更新…");
+        if (event.event === "Progress") setUpdateMessage("正在下载更新…");
+        if (event.event === "Finished") setUpdateMessage("下载完成，正在安装…");
+      });
+    } catch (error) {
+      setUpdateMessage(`更新安装失败：${String(error)}`);
+      await update.close().catch(() => {});
+      setAvailableUpdate(null);
+      setUpdateInstalling(false);
+    }
   }
 
   function draft(id) {
@@ -112,12 +158,27 @@ function Settings() {
   }
 
   onMount(() => {
+    const unsubEngines = listen("translation-engines-changed", (event) => {
+      const settings = event.payload || {};
+      engineSettingsChangedDuringLoad = true;
+      if (typeof settings.localOnly === "boolean") setLocalOnly(settings.localOnly);
+      if (settings.mtSource) setMtSource(settings.mtSource);
+      if (settings.aiSource) {
+        const wasFollowingSelection = editId() === aiSource();
+        setAiSource(settings.aiSource);
+        if (wasFollowingSelection) setEditId(settings.aiSource);
+        if (settings.aiSource === "ollama" && ollamaModels().length === 0 && !testing().ollama) loadOllama();
+      }
+    });
+
     invoke("get_settings")
       .then((s) => {
         if (!s) return;
-        setMtSource(s.mtSource || "google");
-        setAiSource(s.aiSource || "free");
-        setEditId(s.aiSource || "free");
+        if (!engineSettingsChangedDuringLoad) {
+          setMtSource(s.mtSource || "google");
+          setAiSource(s.aiSource || "free");
+          setEditId(s.aiSource || "free");
+        }
         setStyle(s.style || "none");
         setDisplayMode(s.displayMode || "compare");
         setAllowPartialClipboard(Boolean(s.allowPartialClipboard));
@@ -152,6 +213,8 @@ function Settings() {
       window.removeEventListener("keydown", onKey);
       window.clearTimeout(toastTimer);
       unsubAutostart.then((u) => u());
+      unsubEngines.then((u) => u());
+      availableUpdate()?.close().catch(() => {});
     });
   });
 
@@ -264,8 +327,24 @@ function Settings() {
         applyModels(models);
         setTestResult((prev) => ({ ...prev, ollama: `✓ 已连接 · ${(models || []).length} 个模型` }));
       })
-      .catch((err) => setTestResult((prev) => ({ ...prev, ollama: String(err) })))
+      .catch((err) => {
+        setTestResult((prev) => ({ ...prev, ollama: String(err) }));
+        if (localOnly()) showToast("未检测到 Ollama，请安装并启动后再试。离线机器翻译仍可使用。");
+      })
       .finally(() => setTesting((prev) => ({ ...prev, ollama: false })));
+  }
+
+  function setLocalOnlyMode(enabled) {
+    setLocalOnly(enabled);
+    if (enabled) {
+      setMtSource("offline");
+      setAiSource("ollama");
+      setEditId("ollama");
+      save({ localOnly: true, mtSource: "offline", aiSource: "ollama" });
+      testOllama();
+      return;
+    }
+    save({ localOnly: false });
   }
 
   function mtNote() {
@@ -361,13 +440,31 @@ function Settings() {
         </label>
         <p class="note">复制文字后按这个快捷键，直接翻译剪贴板里的内容。取词不到时也可用这种方式。</p>
         <p class="note">按截图翻译快捷键框选屏幕区域，识别文字后翻译并盖回原位。</p>
+        <div class="row update-row">
+          <span>软件更新</span>
+          <button type="button" class="secondary-btn" disabled={updateChecking() || updateInstalling()} onClick={checkForUpdates}>
+            {updateChecking() ? "检查中…" : "检查更新"}
+          </button>
+        </div>
+        <Show when={availableUpdate()}>
+          <div class="update-available">
+            <p>发现新版本 Vela {availableUpdate().version}</p>
+            <pre>{availableUpdate().body?.trim() || "此版本没有附带更新说明。"}</pre>
+            <button type="button" class="primary-btn" disabled={updateInstalling()} onClick={installAvailableUpdate}>
+              确认下载并安装
+            </button>
+          </div>
+        </Show>
+        <Show when={updateMessage()}>
+          <p class="note update-message" role="status">{updateMessage()}</p>
+        </Show>
       </section>
 
       <section class="group">
         <h2>翻译</h2>
         <label class="row">
           <span>机器翻译</span>
-          <select value={mtSource()} onChange={(e) => { setMtSource(e.currentTarget.value); save(); }}>
+          <select disabled={localOnly()} value={mtSource()} onChange={(e) => { setMtSource(e.currentTarget.value); save(); }}>
             <option value="google">Google</option>
             <option value="mymemory">MyMemory</option>
             <option value="deepl">DeepL</option>
@@ -432,7 +529,7 @@ function Settings() {
         <h2>AI 翻译</h2>
         <label class="row">
           <span>使用</span>
-          <select value={aiSource()} onChange={onEditChange}>
+          <select disabled={localOnly()} value={aiSource()} onChange={onEditChange}>
             <For each={added()}>
               {(p) => <option value={p.id}>{p.label}</option>}
             </For>
@@ -547,7 +644,7 @@ function Settings() {
               type="checkbox"
               class="switch"
               checked={localOnly()}
-              onChange={(e) => { setLocalOnly(e.currentTarget.checked); save({ localOnly: e.currentTarget.checked }); }}
+              onChange={(e) => setLocalOnlyMode(e.currentTarget.checked)}
             />
           </label>
           <p class="note">开启后只使用本机服务（离线翻译 + Ollama），不发送任何文字。</p>

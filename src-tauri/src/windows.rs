@@ -76,26 +76,61 @@ pub fn settings(app: &AppHandle) -> Option<WebviewWindow> {
     app.get_webview_window(SETTINGS_LABEL)
 }
 
-/// Show the action bar near the given screen point, clamped into the work area.
-/// Safe to call from any thread: window calls are dispatched to the main loop.
+const ICON_W: i32 = 52;
+const ICON_H: i32 = 52;
+const EXPANDED_W: i32 = 220;
+const EXPANDED_H: i32 = 72;
+
+/// Show the collapsed entry icon near the selection, offset so it does not sit
+/// under the cursor tip. Safe from any thread.
 pub fn show_bar(app: &AppHandle, x: i32, y: i32, suggested: String) {
     let app = app.clone();
     let _ = tauri::async_runtime::spawn(async move {
         let Some(window) = bar(&app) else {
             return;
         };
-        let (px, py) = crate::selection::clamp_near_cursor(x, y, 220, 72);
+        apply_no_activate(&window);
+        let _ = window.set_size(tauri::LogicalSize::new(ICON_W as f64, ICON_H as f64));
+        // 离光标再远一点，避免落在右下角一两像素处。
+        let (px, py) = crate::selection::clamp_near_cursor(x + 12, y + 8, ICON_W, ICON_H);
         let _ = window.set_position(PhysicalPosition::new(px, py));
         let _ = window.show();
-        let _ = app.emit("bar:show", serde_json::json!({ "suggested": suggested }));
+        let _ = app.emit(
+            "bar:show",
+            serde_json::json!({ "suggested": suggested, "collapsed": true }),
+        );
+    });
+}
+
+pub fn set_bar_layout(app: &AppHandle, mode: &str) {
+    let expanded = mode == "expanded";
+    let app = app.clone();
+    let _ = tauri::async_runtime::spawn(async move {
+        let Some(window) = bar(&app) else {
+            return;
+        };
+        apply_no_activate(&window);
+        let (w, h) = if expanded {
+            (EXPANDED_W, EXPANDED_H)
+        } else {
+            (ICON_W, ICON_H)
+        };
+        // Keep top-left fixed so the recommended action sits where the icon was.
+        let pos = window.outer_position().ok();
+        let _ = window.set_size(tauri::LogicalSize::new(w as f64, h as f64));
+        if let Some(p) = pos {
+            let _ = window.set_position(p);
+        }
     });
 }
 
 pub fn hide_bar(app: &AppHandle) {
     let app = app.clone();
     let _ = tauri::async_runtime::spawn(async move {
+        let _ = app.emit("bar:hide", ());
         if let Some(window) = bar(&app) {
             let _ = window.hide();
+            let _ = window.set_size(tauri::LogicalSize::new(ICON_W as f64, ICON_H as f64));
         }
     });
 }

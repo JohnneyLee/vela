@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "action-bar",
+  "description": "Action bar permissions",
+  "windows": ["bar"],
+  "permissions": ["core:default", "allow-get-settings", "allow-bar", "allow-open-settings"]
+}

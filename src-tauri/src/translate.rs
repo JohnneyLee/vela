@@ -401,13 +401,25 @@ pub async fn translate_compare(
     style: Option<&str>,
     mode: &str,
     polish_level: &str,
+    polish_instruction: &str,
     native: &str,
     keys: &ProviderKeys,
     model_dir: &Path,
 ) -> CompareTranslation {
     let (mt, ai) = tokio::join!(
         mt_column(text, target, mt_source, model_dir, &keys.deepl, &|_| {}),
-        ai_column(text, target, ai_source, style, mode, polish_level, native, keys, &|_| {}),
+        ai_column(
+            text,
+            target,
+            ai_source,
+            style,
+            mode,
+            polish_level,
+            polish_instruction,
+            native,
+            keys,
+            &|_| {},
+        ),
     );
     let secrets = [keys.deepl.as_str(), keys.deepseek.as_str()];
     CompareTranslation {
@@ -439,12 +451,25 @@ pub async fn translate_ai(
     style: Option<&str>,
     mode: &str,
     polish_level: &str,
+    polish_instruction: &str,
     native: &str,
     keys: &ProviderKeys,
     on_chunk: &(dyn Fn(String) + Send + Sync),
 ) -> (String, String, String) {
     cancel_ai();
-    let column = ai_column(text, target, source, style, mode, polish_level, native, keys, on_chunk).await;
+    let column = ai_column(
+        text,
+        target,
+        source,
+        style,
+        mode,
+        polish_level,
+        polish_instruction,
+        native,
+        keys,
+        on_chunk,
+    )
+    .await;
     let secrets = [keys.deepl.as_str(), keys.deepseek.as_str()];
     (
         column.text,
@@ -467,7 +492,7 @@ async fn mt_column(
 ) -> Column {
     let text = normalize_for_translation(text);
     match source {
-        "google" => google_column(&text, target, model_dir, on_status).await,
+        "google" => google_column(&text, target).await,
         "mymemory" => mymemory_column(&text, target).await,
         "offline" => offline_column(&text, target, model_dir, on_status).await,
         "deepl" => deepl_column(&text, target, deepl_key, None).await,
@@ -478,8 +503,6 @@ async fn mt_column(
 async fn google_column(
     text: &str,
     target: &str,
-    model_dir: &Path,
-    on_status: &(dyn Fn(String) + Send + Sync),
 ) -> Column {
     let req = TranslateRequest {
         text,
@@ -488,25 +511,7 @@ async fn google_column(
     };
     match GoogleGtx.translate(req).await {
         Ok(translated) => ready(translated, "google"),
-        Err(google_err) => {
-            let req = TranslateRequest {
-                text,
-                target,
-                style: None,
-            };
-            match MyMemory.translate(req).await {
-                Ok(translated) => ready(translated, "mymemory"),
-                Err(fallback_err) => {
-                    match offline_column(text, target, model_dir, on_status).await {
-                        column if column.error.is_empty() && !column.text.is_empty() => column,
-                        column => failed(format!(
-                            "Google：{google_err}\nMyMemory：{fallback_err}\n离线：{}",
-                            column.error
-                        )),
-                    }
-                }
-            }
-        }
+        Err(google_err) => failed(format!("Google 翻译失败：{google_err}")),
     }
 }
 
@@ -585,6 +590,7 @@ async fn ai_column(
     style: Option<&str>,
     mode: &str,
     polish_level: &str,
+    polish_instruction: &str,
     native: &str,
     keys: &ProviderKeys,
     on_chunk: &(dyn Fn(String) + Send + Sync),
@@ -618,7 +624,15 @@ async fn ai_column(
         }
         "deepl" => failed("DeepL 只能翻译，不能解释或润色。请改用其他引擎。"),
         s => {
-            let prompt = ai_prompt(mode, effective, target, style, polish_level, native);
+            let prompt = ai_prompt(
+                mode,
+                effective,
+                target,
+                style,
+                polish_level,
+                polish_instruction,
+                native,
+            );
             match chat_with_preset(s, &prompt, keys, &wrapped_chunk, true).await {
                 Ok(text) => ready(text, s),
                 Err(err) if err == CANCELLED => Column {
@@ -688,10 +702,18 @@ fn translation_prompt(text: &str, target: &str, style: Option<&str>) -> String {
     )
 }
 
-fn ai_prompt(mode: &str, text: &str, target: &str, style: Option<&str>, polish_level: &str, native: &str) -> String {
+fn ai_prompt(
+    mode: &str,
+    text: &str,
+    target: &str,
+    style: Option<&str>,
+    polish_level: &str,
+    polish_instruction: &str,
+    native: &str,
+) -> String {
     match mode {
         "explain" => explanation_prompt(text, native),
-        "polish" => polish_prompt(text, polish_level),
+        "polish" => polish_prompt(text, polish_level, polish_instruction),
         _ => translation_prompt(text, target, style),
     }
 }
@@ -716,7 +738,20 @@ fn native_name(native: &str) -> &'static str {
     }
 }
 
-fn polish_prompt(text: &str, level: &str) -> String {
+fn polish_prompt(text: &str, level: &str, instruction: &str) -> String {
+    let custom = instruction.trim();
+    if !custom.is_empty() {
+        return format!(
+            "You are a careful editor. Rewrite the text below according to the user's requirements.\n\
+             User requirements:\n{custom}\n\
+             Rules:\n\
+             - Keep the same language as the input unless the user asks otherwise.\n\
+             - Keep technical terms, symbols, formulas, citations and numbers unless asked to change them.\n\
+             - Do not invent facts the user did not ask for.\n\
+             - Any ⟦number⟧ marker is a placeholder: copy it exactly as-is.\n\
+             - Output only the rewritten text, nothing else.\n\n{text}"
+        );
+    }
     let level_rule = match level {
         "light" => "只改拼写和语法错误，其余一律不动。",
         "heavy" => "可以大幅改写句子结构和措辞，让表达更流畅，但原意和所有信息必须保留。",
@@ -982,10 +1017,28 @@ mod tests {
 
     #[test]
     fn modes_pick_the_right_prompt() {
-        assert!(ai_prompt("explain", "hello", "zh-CN", None, "standard", "zh").contains("词典"));
-        assert!(ai_prompt("polish", "hello", "zh-CN", None, "standard", "zh").contains("copy editor"));
-        assert!(ai_prompt("polish", "hello", "zh-CN", None, "light", "zh").contains("只改拼写和语法"));
-        assert!(ai_prompt("translate", "hello", "zh-CN", None, "standard", "zh").contains("Translate"));
+        assert!(ai_prompt("explain", "hello", "zh-CN", None, "standard", "", "zh").contains("词典"));
+        assert!(
+            ai_prompt("polish", "hello", "zh-CN", None, "standard", "", "zh").contains("copy editor")
+        );
+        assert!(
+            ai_prompt("polish", "hello", "zh-CN", None, "light", "", "zh").contains("只改拼写和语法")
+        );
+        assert!(
+            ai_prompt(
+                "polish",
+                "hello",
+                "zh-CN",
+                None,
+                "standard",
+                "改成条目列表",
+                "zh"
+            )
+            .contains("改成条目列表")
+        );
+        assert!(
+            ai_prompt("translate", "hello", "zh-CN", None, "standard", "", "zh").contains("Translate")
+        );
     }
 
     #[test]
@@ -1037,6 +1090,7 @@ mod tests {
             None,
             "translate",
             "standard",
+            "",
             "zh",
             &keys,
             &|_| {},
@@ -1058,6 +1112,7 @@ mod tests {
             None,
             "translate",
             "standard",
+            "",
             "zh",
             &keys,
             &|_| {},

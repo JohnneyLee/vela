@@ -94,8 +94,12 @@ pub fn capture() -> Result<ScreenCapture, String> {
         let _ = ReleaseDC(None, screen_dc);
 
         // GetDIBits with BI_RGB yields BGRA; flip to RGBA for the front end.
+        // The alpha byte is left 0 by GetDIBits, which would make the whole
+        // image transparent both on the canvas and to the OCR engine — force
+        // it opaque.
         for px in pixels.chunks_exact_mut(4) {
             px.swap(0, 2);
+            px[3] = 255;
         }
 
         Ok(ScreenCapture {
@@ -210,7 +214,34 @@ pub fn crop_rgba(
     (out, w, h)
 }
 
-/// Base64-encode RGBA pixel bytes for transfer to the overlay webview.
+/// Encode RGBA pixels as a PNG (pot-desktop style). Much smaller than raw
+/// RGBA over IPC, and the front end can show it with a plain `<img>`.
+pub fn encode_png(pixels: &[u8], width: i32, height: i32) -> Result<Vec<u8>, String> {
+    use image::ImageEncoder;
+    if width <= 0 || height <= 0 {
+        return Err("无效的图片尺寸。".into());
+    }
+    let expected = (width as usize)
+        .checked_mul(height as usize)
+        .and_then(|n| n.checked_mul(4))
+        .ok_or("图片尺寸过大。")?;
+    if pixels.len() < expected {
+        return Err("像素数据不完整。".into());
+    }
+    let mut out = Vec::new();
+    let encoder = image::codecs::png::PngEncoder::new(&mut out);
+    encoder
+        .write_image(
+            &pixels[..expected],
+            width as u32,
+            height as u32,
+            image::ExtendedColorType::Rgba8,
+        )
+        .map_err(|e| format!("PNG 编码失败：{e}"))?;
+    Ok(out)
+}
+
+/// Base64-encode bytes for transfer to the overlay webview.
 pub fn encode_base64(bytes: &[u8]) -> String {
     const TABLE: &[u8; 64] =
         b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -287,6 +318,19 @@ mod tests {
         assert_eq!(encode_base64(b"fo"), "Zm8=");
         assert_eq!(encode_base64(b"foo"), "Zm9v");
         assert_eq!(encode_base64(b"foobar"), "Zm9vYmFy");
+    }
+
+    #[test]
+    fn encode_png_roundtrips_dimensions() {
+        let (w, h) = (2i32, 2i32);
+        let px = [
+            255u8, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 255, 255,
+        ];
+        let png = encode_png(&px, w, h).expect("png");
+        assert!(png.starts_with(&[0x89, b'P', b'N', b'G']));
+        let decoded = image::load_from_memory(&png).expect("decode");
+        assert_eq!(decoded.width(), 2);
+        assert_eq!(decoded.height(), 2);
     }
 
     #[test]

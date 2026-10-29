@@ -4,26 +4,32 @@ import { listen } from "@tauri-apps/api/event";
 import "./tokens.css";
 import "./bar.css";
 
-const ACTIONS = [
-  { id: "translate", label: "译" },
-  { id: "explain", label: "释" },
-  { id: "polish", label: "润" },
-  { id: "speak", label: "读" },
-];
+const TIP_KEY = "vela.bar.tipSeen";
 
 function Bar() {
-  const [suggested, setSuggested] = createSignal("translate");
+  const [showTip, setShowTip] = createSignal(false);
+  const [near, setNear] = createSignal(false);
+  let ignoreUntil = 0;
 
-  function pick(action) {
-    invoke("bar_pick", { action });
+  function openPanel() {
+    if (Date.now() < ignoreUntil) return;
+    // 只取词并打开结果卡，不自动跑译/释/润——等用户在卡片上点四个字之一。
+    invoke("bar_pick", { action: "choose" });
+    if (!localStorage.getItem(TIP_KEY)) {
+      localStorage.setItem(TIP_KEY, "1");
+      setShowTip(false);
+    }
   }
 
   onMount(() => {
     const unsubs = [];
-    listen("bar:show", (event) => {
-      const p = event.payload;
-      if (p?.suggested) setSuggested(p.suggested);
+    listen("bar:show", () => {
+      ignoreUntil = Date.now() + 180;
+      invoke("bar_layout", { mode: "collapsed" });
+      if (!localStorage.getItem(TIP_KEY)) setShowTip(true);
     }).then((u) => unsubs.push(u));
+
+    listen("bar:hide", () => setShowTip(false)).then((u) => unsubs.push(u));
 
     const onKey = (e) => {
       if (e.key === "Escape") invoke("bar_hide");
@@ -36,18 +42,28 @@ function Bar() {
   });
 
   return (
-    <div class="bar">
-      {ACTIONS.map((a) => (
-        <button
-          type="button"
-          class="bar-btn"
-          classList={{ suggested: suggested() === a.id }}
-          aria-label={a.label}
-          onClick={() => pick(a.id)}
-        >
-          {a.label}
-        </button>
-      ))}
+    <div
+      class="bar"
+      classList={{ near: near() }}
+      onMouseEnter={() => setNear(true)}
+      onMouseLeave={() => setNear(false)}
+    >
+      <button
+        type="button"
+        class="bar-glyph"
+        aria-label="打开 Vela，选择功能"
+        title="打开后选择：译 / 释 / 润 / 读"
+        onClick={openPanel}
+      >
+        <span class="bar-glyph-mark" aria-hidden="true">
+          V
+        </span>
+      </button>
+      {showTip() && (
+        <div class="bar-tip" role="status">
+          点开后选：译 / 释 / 润 / 读
+        </div>
+      )}
     </div>
   );
 }

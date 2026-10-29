@@ -32,6 +32,9 @@ use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut,
 
 static CAPTURING: AtomicBool = AtomicBool::new(false);
 
+/// 截图翻译的框选/结果层当前是否可见（用于把 Esc 全局快捷键路由到 overlay）。
+static OVERLAY_ACTIVE: AtomicBool = AtomicBool::new(false);
+
 /// 当前「翻译剪贴板」快捷键（可在设置里改）。handler 用它和按键对比。
 static CLIPBOARD_SHORTCUT: OnceLock<Mutex<Shortcut>> = OnceLock::new();
 
@@ -47,6 +50,9 @@ static RESULT_IMAGE: Mutex<Option<screenshot::ScreenCapture>> = Mutex::new(None)
 /// 截图翻译的渲染块（O5），供 overlay 结果模式读取，关闭即清除。
 static OCR_BLOCKS: Mutex<Option<Vec<screenshot_flow::RenderBlock>>> = Mutex::new(None);
 
+/// 本次截图翻译用的引擎说明，例如「AI · DeepSeek」或「机器翻译 · Google」。
+static OCR_ENGINE_LABEL: Mutex<Option<String>> = Mutex::new(None);
+
 /// 已钉住的截图翻译结果（O6）。每钉住一次生成一个独立窗口，可并存多个。
 static PINNED: LazyLock<Mutex<HashMap<u64, PinnedResult>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
@@ -56,6 +62,7 @@ static PINNED_SEQ: AtomicU64 = AtomicU64::new(1);
 struct PinnedResult {
     cap: screenshot::ScreenCapture,
     blocks: Vec<screenshot_flow::RenderBlock>,
+    engine_label: String,
 }
 
 fn default_clipboard_shortcut() -> Shortcut {
@@ -163,6 +170,29 @@ struct OcrResultPayload {
     /// RGBA pixels of the selected region, base64-encoded.
     b64: String,
     blocks: Vec<screenshot_flow::RenderBlock>,
+    /// 例如「AI · DeepSeek」或「机器翻译 · Google」，方便用户分辨。
+    engine_label: String,
+}
+
+fn screenshot_engine_label(use_ai: bool, source: &str) -> String {
+    let name = match source {
+        "google" => "Google",
+        "mymemory" => "MyMemory",
+        "offline" => "离线",
+        "deepl" => "DeepL",
+        "deepseek" => "DeepSeek",
+        "openai" => "OpenAI",
+        "moonshot" => "Moonshot",
+        "gemini" => "Gemini",
+        "ollama" => "Ollama",
+        "free" => "免费 AI",
+        other => other,
+    };
+    if use_ai {
+        format!("AI · {name}")
+    } else {
+        format!("机器翻译 · {name}")
+    }
 }
 
 #[derive(Serialize)]
@@ -228,6 +258,7 @@ fn translate_clipboard(app: &tauri::AppHandle) {
 
 /// 按下「截图翻译」快捷键：先截下整个屏幕，再显示全屏框选层。
 fn start_screenshot(app: &tauri::AppHandle) {
+    debug_log("start_screenshot: entry");
     picker::hide();
     windows::hide_bar(app);
     let app = app.clone();
@@ -236,17 +267,24 @@ fn start_screenshot(app: &tauri::AppHandle) {
         let cap = match captured {
             Ok(Ok(cap)) => cap,
             Ok(Err(err)) => {
+                debug_log(&format!("start_screenshot: capture err={err}"));
                 place_and_show(&app);
                 let _ = app.emit("selection-error", err);
                 return;
             }
             Err(err) => {
+                debug_log(&format!("start_screenshot: join err={err}"));
                 place_and_show(&app);
                 let _ = app.emit("selection-error", format!("截图失败：{err}"));
                 return;
             }
         };
+        debug_log(&format!(
+            "start_screenshot: captured {}x{} origin=({},{})",
+            cap.width, cap.height, cap.origin_x, cap.origin_y
+        ));
         if screenshot::is_black(&cap.pixels) {
+            debug_log("start_screenshot: capture is black -> protected");
             place_and_show(&app);
             let _ = app.emit("selection-error", "该画面受保护，无法截图。".to_string());
             return;
@@ -258,12 +296,26 @@ fn start_screenshot(app: &tauri::AppHandle) {
         if let Ok(mut guard) = SCREENSHOT.lock() {
             *guard = Some(cap);
         }
-        if let Some(window) = app.get_webview_window("overlay") {
-            let _ = window.set_position(PhysicalPosition::new(origin_x, origin_y));
-            let _ = window.set_size(PhysicalSize::new(width as u32, height as u32));
-            let _ = window.show();
-            let _ = window.set_focus();
+        match app.get_webview_window("overlay") {
+            Some(window) => {
+                // pot-desktop：先按物理尺寸铺满，再 always-on-top + show + focus。
+                let _ = window.set_fullscreen(false);
+                let _ = window.set_position(PhysicalPosition::new(origin_x, origin_y));
+                let _ = window.set_size(PhysicalSize::new(width as u32, height as u32));
+                let _ = window.set_always_on_top(true);
+                let r1 = window.show();
+                let r2 = window.set_focus();
+                debug_log(&format!(
+                    "start_screenshot: overlay show={r1:?} focus={r2:?}"
+                ));
+            }
+            None => debug_log("start_screenshot: no overlay window!"),
         }
+        OVERLAY_ACTIVE.store(true, Ordering::SeqCst);
+        arm_dismiss(&app);
+        // 通知 overlay 前端重画：overlay 窗口在启动时就已加载，组件不会重新挂载，
+        // 必须靠事件触发 get_screenshot 重新取图，否则画布是空的。
+        let _ = app.emit("screenshot-ready", ());
     });
 }
 
@@ -273,17 +325,27 @@ fn screenshot_translate(app: tauri::AppHandle) {
     start_screenshot(&app);
 }
 
-/// 把全屏截图交给 overlay 前端显示。
+/// 把全屏截图交给 overlay 前端显示（PNG，沿用 pot-desktop 的做法，避免
+/// 4K 原始 RGBA 经 IPC 传几十 MB）。
 #[tauri::command]
 fn get_screenshot() -> Result<ScreenshotPayload, String> {
     let guard = SCREENSHOT.lock().map_err(|e| e.to_string())?;
     let cap = guard.as_ref().ok_or("没有可用的截图。")?;
+    let png = screenshot::encode_png(&cap.pixels, cap.width, cap.height)?;
+    let b64 = screenshot::encode_base64(&png);
+    debug_log(&format!(
+        "get_screenshot: {}x{} png={} b64={}",
+        cap.width,
+        cap.height,
+        png.len(),
+        b64.len()
+    ));
     Ok(ScreenshotPayload {
         width: cap.width,
         height: cap.height,
         origin_x: cap.origin_x,
         origin_y: cap.origin_y,
-        b64: screenshot::encode_base64(&cap.pixels),
+        b64,
     })
 }
 
@@ -294,13 +356,20 @@ fn get_ocr_result() -> Result<OcrResultPayload, String> {
     let cap = cap_guard.as_ref().ok_or("没有可用的截图翻译结果。")?;
     let blocks_guard = OCR_BLOCKS.lock().map_err(|e| e.to_string())?;
     let blocks = blocks_guard.as_ref().cloned().unwrap_or_default();
+    let engine_label = OCR_ENGINE_LABEL
+        .lock()
+        .ok()
+        .and_then(|g| g.clone())
+        .unwrap_or_else(|| "机器翻译".into());
+    let png = screenshot::encode_png(&cap.pixels, cap.width, cap.height)?;
     Ok(OcrResultPayload {
         width: cap.width,
         height: cap.height,
         origin_x: cap.origin_x,
         origin_y: cap.origin_y,
-        b64: screenshot::encode_base64(&cap.pixels),
+        b64: screenshot::encode_base64(&png),
         blocks,
+        engine_label,
     })
 }
 
@@ -319,11 +388,16 @@ async fn pin_result(app: tauri::AppHandle) -> Result<u64, String> {
         .take()
         .unwrap_or_default();
 
+    let engine_label = OCR_ENGINE_LABEL
+        .lock()
+        .ok()
+        .and_then(|mut g| g.take())
+        .unwrap_or_else(|| "机器翻译".into());
     let id = PINNED_SEQ.fetch_add(1, Ordering::SeqCst);
     PINNED
         .lock()
         .map_err(|e| e.to_string())?
-        .insert(id, PinnedResult { cap, blocks });
+        .insert(id, PinnedResult { cap, blocks, engine_label });
 
     let window = WebviewWindowBuilder::new(
         &app,
@@ -336,20 +410,29 @@ async fn pin_result(app: tauri::AppHandle) -> Result<u64, String> {
     .always_on_top(true)
     .skip_taskbar(true)
     .resizable(true)
+    .focused(true)
     .build()
     .map_err(|e| e.to_string())?;
 
-    // 定位到原结果的位置与大小。
+    // 定位到原结果位置；高度多留一截给顶栏（约 36 CSS px × DPI）。
     let pinned = PINNED.lock().map_err(|e| e.to_string())?;
     if let Some(result) = pinned.get(&id) {
+        let scale = window.scale_factor().unwrap_or(1.0);
+        let bar = (28.0 * scale).round() as u32;
         let _ = window.set_position(PhysicalPosition::new(result.cap.origin_x, result.cap.origin_y));
-        let _ = window.set_size(PhysicalSize::new(result.cap.width as u32, result.cap.height as u32));
+        let _ = window.set_size(PhysicalSize::new(
+            result.cap.width as u32,
+            result.cap.height as u32 + bar,
+        ));
     }
+    drop(pinned);
     let _ = window.show();
     let _ = window.set_focus();
 
-    // 关闭 overlay（回到待命），不销毁钉住的结果。
+    // 关闭 overlay（回到待命），不销毁钉住的结果；Esc 继续可用。
     close_overlay(&app);
+    sync_dismiss(&app);
+    debug_log(&format!("pin_result: id={id}"));
     Ok(id)
 }
 
@@ -358,24 +441,40 @@ async fn pin_result(app: tauri::AppHandle) -> Result<u64, String> {
 fn get_pinned_result(id: u64) -> Result<OcrResultPayload, String> {
     let pinned = PINNED.lock().map_err(|e| e.to_string())?;
     let result = pinned.get(&id).ok_or("结果已关闭。")?;
+    let png = screenshot::encode_png(&result.cap.pixels, result.cap.width, result.cap.height)?;
     Ok(OcrResultPayload {
         width: result.cap.width,
         height: result.cap.height,
         origin_x: result.cap.origin_x,
         origin_y: result.cap.origin_y,
-        b64: screenshot::encode_base64(&result.cap.pixels),
+        b64: screenshot::encode_base64(&png),
         blocks: result.blocks.clone(),
+        engine_label: result.engine_label.clone(),
     })
 }
 
 /// 关闭一个钉住的窗口并立刻清空内存里的截图和识别结果。
 #[tauri::command]
 fn close_pinned(app: tauri::AppHandle, id: u64) {
+    debug_log(&format!("close_pinned: id={id}"));
     if let Ok(mut pinned) = PINNED.lock() {
         pinned.remove(&id);
     }
     if let Some(window) = app.get_webview_window(&format!("pinned-{id}")) {
-        let _ = window.close();
+        let _ = window.hide();
+        let _ = window.destroy();
+    }
+    sync_dismiss(&app);
+}
+
+/// 关掉所有钉住的窗口并清空内存。
+fn close_all_pinned(app: &tauri::AppHandle) {
+    let ids: Vec<u64> = PINNED
+        .lock()
+        .map(|g| g.keys().copied().collect())
+        .unwrap_or_default();
+    for id in ids {
+        close_pinned(app.clone(), id);
     }
 }
 
@@ -411,7 +510,15 @@ async fn overlay_select(
     })
     .await
     .map_err(|e| e.to_string())?;
-    let lines = recognized?;
+    let lines = match recognized {
+        Ok(lines) => lines,
+        Err(err) => {
+            place_and_show(&app);
+            let _ = app.emit("selection-error", err);
+            close_overlay(&app);
+            return Ok(());
+        }
+    };
 
     if lines.is_empty() {
         place_and_show(&app);
@@ -437,12 +544,60 @@ async fn overlay_select(
     } else {
         stored.mt_source.clone()
     };
+    let ai_source = if stored.local_only {
+        "ollama".to_string()
+    } else {
+        stored.ai_source.clone()
+    };
+    let keys = translate::ProviderKeys {
+        deepl: stored.deepl_key.clone(),
+        deepseek: stored.deepseek_key.clone(),
+        openai: stored.openai_key.clone(),
+        moonshot: stored.moonshot_key.clone(),
+        gemini: stored.gemini_key.clone(),
+        ollama_model: stored.ollama_model.clone(),
+    };
     let model_dir = settings_dir(&app)
         .unwrap_or_else(|_| std::env::temp_dir().join("Vela"))
         .join("models");
-    let translator =
-        screenshot_flow::mt_translator(mt_source, model_dir, stored.deepl_key);
-    let blocks = screenshot_flow::translate_paragraphs(paragraphs, target, translator).await;
+    // 盖回原位只显示一路：按「结果显示方式」在 AI / 机器翻译之间选。
+    let use_ai = screenshot_flow::prefer_ai_for_overlay(&stored.display_mode, &ai_source, &keys);
+    let engine_label = if use_ai {
+        screenshot_engine_label(true, &ai_source)
+    } else {
+        screenshot_engine_label(false, &mt_source)
+    };
+    let (translator, concurrency) = if use_ai {
+        let style = if stored.style == "none" {
+            None
+        } else {
+            Some(stored.style.clone())
+        };
+        debug_log(&format!(
+            "overlay_select: engine=ai source={ai_source} mode={}",
+            stored.display_mode
+        ));
+        (
+            screenshot_flow::ai_translator(ai_source, style, native, keys),
+            1usize,
+        )
+    } else {
+        debug_log(&format!(
+            "overlay_select: engine=mt source={mt_source} mode={}",
+            stored.display_mode
+        ));
+        (
+            screenshot_flow::mt_translator(mt_source, model_dir, stored.deepl_key),
+            6usize,
+        )
+    };
+    if let Ok(mut guard) = OCR_ENGINE_LABEL.lock() {
+        *guard = Some(engine_label);
+    }
+    let blocks = screenshot_flow::translate_paragraphs_with_concurrency(
+        paragraphs, target, translator, concurrency,
+    )
+    .await;
 
     // 采样每个段落边框的背景色，准备渲染块（擦除原文 + 写译文）。
     let render = screenshot_flow::prepare_render(blocks, &pixels, w, h);
@@ -480,6 +635,7 @@ fn overlay_cancel(app: tauri::AppHandle) {
 }
 
 fn close_overlay(app: &tauri::AppHandle) {
+    OVERLAY_ACTIVE.store(false, Ordering::SeqCst);
     if let Some(window) = app.get_webview_window("overlay") {
         let _ = window.hide();
     }
@@ -492,6 +648,10 @@ fn close_overlay(app: &tauri::AppHandle) {
     if let Ok(mut guard) = OCR_BLOCKS.lock() {
         *guard = None;
     }
+    if let Ok(mut guard) = OCR_ENGINE_LABEL.lock() {
+        *guard = None;
+    }
+    sync_dismiss(app);
 }
 
 #[tauri::command]
@@ -514,6 +674,8 @@ fn save_settings(app: tauri::AppHandle, settings: settings::Settings) -> Result<
     {
         return Err("截图翻译快捷键格式不对。例如：Ctrl+Alt+S。".into());
     }
+    // Persist and broadcast the same effective engines used by local-only translation.
+    let settings = settings.normalize();
     let theme = settings.theme.clone();
     let new_shortcut = settings.clipboard_shortcut.clone();
     let new_screenshot = settings.screenshot_shortcut.clone();
@@ -521,6 +683,14 @@ fn save_settings(app: tauri::AppHandle, settings: settings::Settings) -> Result<
         .map(|dir| settings::load(&dir))
         .unwrap_or_default();
     settings::save(&settings_dir(&app)?, &settings)?;
+    let _ = app.emit(
+        "translation-engines-changed",
+        serde_json::json!({
+            "mtSource": settings.mt_source,
+            "aiSource": settings.ai_source,
+            "localOnly": settings.local_only,
+        }),
+    );
     // 主题变化后广播给所有窗口（bar / panel / settings），让它们即时切换。
     let _ = app.emit("theme-changed", theme);
     if old.clipboard_shortcut != new_shortcut {
@@ -612,6 +782,7 @@ async fn translate_text(
     direction: Option<String>,
     mode: Option<String>,
     polish_level: Option<String>,
+    polish_instruction: Option<String>,
     ticket: Option<u64>,
 ) -> Result<TranslateResponse, String> {
     let text = text.trim();
@@ -632,6 +803,7 @@ async fn translate_text(
     let direction = direction.unwrap_or_else(|| "auto".into());
     let mode = mode.unwrap_or_else(|| "translate".into());
     let polish_level = polish_level.unwrap_or_else(|| "standard".into());
+    let polish_instruction = polish_instruction.unwrap_or_default();
     // 手动方向（zh-en / en-zh）只对这一次有效；"auto" 表示按母语规则自动判断。
     let manual = match direction.as_str() {
         "zh-en" | "en-zh" => Some(direction.as_str()),
@@ -684,6 +856,7 @@ async fn translate_text(
                 style_ref,
                 &mode,
                 &polish_level,
+                &polish_instruction,
                 &native,
                 &keys,
                 &move |chunk| {
@@ -708,6 +881,7 @@ async fn translate_text(
                 style_ref,
                 &mode,
                 &polish_level,
+                &polish_instruction,
                 &native,
                 &keys,
                 &model_dir,
@@ -741,19 +915,53 @@ fn dismiss_shortcut() -> Shortcut {
     Shortcut::new(None, Code::Escape)
 }
 
+/// 调试日志：写到临时目录，方便在不弹窗的情况下定位截图翻译问题。
+fn debug_log(msg: &str) {
+    let path = std::env::temp_dir().join("vela-debug.log");
+    let line = format!(
+        "{} {msg}\n",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or(0)
+    );
+    let _ = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .and_then(|mut f| std::io::Write::write_all(&mut f, line.as_bytes()));
+}
+
 fn hide_result(app: &tauri::AppHandle) {
     translate::cancel_ai();
     speech::stop();
     if let Some(window) = app.get_webview_window("panel") {
         let _ = window.hide();
     }
-    let _ = app.global_shortcut().unregister(dismiss_shortcut());
+    sync_dismiss(app);
     let _ = app.emit("result-dismissed", ());
 }
 
 fn arm_dismiss(app: &tauri::AppHandle) {
     let _ = app.global_shortcut().unregister(dismiss_shortcut());
     let _ = app.global_shortcut().register(dismiss_shortcut());
+}
+
+/// 让 Esc 全局快捷键只在「结果窗 / 截图框选层 / 钉住窗」需要时注册。
+fn sync_dismiss(app: &tauri::AppHandle) {
+    let panel_visible = app
+        .get_webview_window("panel")
+        .and_then(|w| w.is_visible().ok())
+        .unwrap_or(false);
+    let has_pinned = PINNED
+        .lock()
+        .map(|g| !g.is_empty())
+        .unwrap_or(false);
+    if OVERLAY_ACTIVE.load(Ordering::SeqCst) || panel_visible || has_pinned {
+        arm_dismiss(app);
+    } else {
+        let _ = app.global_shortcut().unregister(dismiss_shortcut());
+    }
 }
 
 #[tauri::command]
@@ -763,21 +971,31 @@ fn dismiss(app: tauri::AppHandle) {
 
 #[tauri::command]
 fn bar_pick(app: tauri::AppHandle, action: String) {
-    windows::hide_bar(&app);
     let allow_partial = settings_dir(&app)
         .map(|dir| settings::load(&dir).allow_partial_clipboard)
         .unwrap_or(false);
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
-        // Clicking the bar may have given the bar's WebView focus. Switch back
-        // to the source window (recorded when the bar appeared) before capturing,
-        // so UI Automation / simulated copy target the app the text was in.
+        // Electron：探测阶段已缓存选区文字，点按钮后选区多半没了——直接用缓存。
+        // 其它应用：先切回源窗口再取词，再关动作条（先 hide 容易丢焦点）。
         let captured = tauri::async_runtime::spawn_blocking(move || {
+            let exe = writeback::target::source_exe();
+            capture::log_focus_stage("bar_pick", &exe);
+            let budget = capture::prefetch_config().budget_ms;
+            // 出条后立刻点「译」时，后台 arm 可能还没写完缓存。
+            if let Some(text) =
+                capture::take_electron_cache_wait(std::time::Duration::from_millis(budget))
+            {
+                capture::log_focus_stage("bar_pick_cache_hit", &exe);
+                return Ok(text);
+            }
+            capture::log_focus_stage("bar_pick_fallback", &exe);
             let _ = writeback::target::switch_back_and_verify();
             capture::capture_allow_partial(allow_partial)
         })
         .await
         .unwrap_or_else(|err| Err(err.to_string()));
+        windows::hide_bar(&app);
         match captured {
             Ok(text) => {
                 place_and_show(&app);
@@ -804,6 +1022,11 @@ fn bar_pick(app: tauri::AppHandle, action: String) {
 #[tauri::command]
 fn bar_hide(app: tauri::AppHandle) {
     windows::hide_bar(&app);
+}
+
+#[tauri::command]
+fn bar_layout(app: tauri::AppHandle, mode: String) {
+    windows::set_bar_layout(&app, &mode);
 }
 
 #[tauri::command]
@@ -872,6 +1095,7 @@ async fn explain_diff(app: tauri::AppHandle, original: String, polished: String)
     let stored = settings_dir(&app)
         .map(|dir| settings::load(&dir))
         .unwrap_or_default();
+    let ai_source = ai_source_for_settings(&stored).to_string();
     let keys = translate::ProviderKeys {
         deepl: stored.deepl_key,
         deepseek: stored.deepseek_key,
@@ -880,7 +1104,15 @@ async fn explain_diff(app: tauri::AppHandle, original: String, polished: String)
         gemini: stored.gemini_key,
         ollama_model: stored.ollama_model,
     };
-    translate::explain_diff(&original, &polished, &stored.ai_source, &keys, &stored.native).await
+    translate::explain_diff(&original, &polished, &ai_source, &keys, &stored.native).await
+}
+
+fn ai_source_for_settings(settings: &settings::Settings) -> &str {
+    if settings.local_only {
+        "ollama"
+    } else {
+        &settings.ai_source
+    }
 }
 
 #[tauri::command]
@@ -892,6 +1124,9 @@ async fn test_ai_connection(
     let stored = settings_dir(&app)
         .map(|dir| settings::load(&dir))
         .unwrap_or_default();
+    if stored.local_only && source != "ollama" {
+        return Err("完全本地模式已开启，已阻止云端连接测试。".into());
+    }
     let keys = translate::ProviderKeys {
         deepl: stored.deepl_key,
         deepseek: stored.deepseek_key,
@@ -1005,6 +1240,7 @@ pub(crate) fn on_hotkey(app: &tauri::AppHandle) {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             place_and_show(app);
         }))
@@ -1018,9 +1254,24 @@ pub fn run() {
                     if event.state != ShortcutState::Pressed {
                         return;
                     }
+                    debug_log(&format!(
+                        "shortcut: {} {}",
+                        format_shortcut(shortcut),
+                        if shortcut.mods.is_empty() { "(bare)" } else { "" }
+                    ));
                     let dismiss_key = dismiss_shortcut();
                     if shortcut == &dismiss_key {
-                        hide_result(app);
+                        if OVERLAY_ACTIVE.load(Ordering::SeqCst) {
+                            close_overlay(app);
+                        } else if PINNED
+                            .lock()
+                            .map(|g| !g.is_empty())
+                            .unwrap_or(false)
+                        {
+                            close_all_pinned(app);
+                        } else {
+                            hide_result(app);
+                        }
                         return;
                     }
                     let wanted = Shortcut::new(
@@ -1200,6 +1451,7 @@ pub fn run() {
             detect_ollama,
             bar_pick,
             bar_hide,
+            bar_layout,
             open_settings,
             settings_close,
             panel_resize,
@@ -1219,6 +1471,14 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn local_only_mode_forces_local_ai_for_polish_explanations() {
+        let mut settings = settings::Settings::default();
+        settings.local_only = true;
+        settings.ai_source = "deepseek".into();
+        assert_eq!(ai_source_for_settings(&settings), "ollama");
+    }
 
     #[test]
     fn default_clipboard_shortcut_is_ctrl_alt_shift_t() {

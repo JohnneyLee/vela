@@ -91,8 +91,6 @@ fn merge_column(col: Vec<OcrLineBox>, median_h: f32, out: &mut Vec<Paragraph>) {
     let mut group: Vec<OcrLineBox> = Vec::new();
     for line in col {
         let starts_item = is_list_item(&line.text);
-        let skip = symbol_ratio(&line.text) > 0.3;
-
         let should_split = if let Some(prev) = group.last() {
             // 行高相差超过 1.3 倍 → 分块。
             let height_ratio = line.height.max(1.0) / prev.height.max(1.0);

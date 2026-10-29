@@ -166,6 +166,10 @@ impl Settings {
             "auto" | "ai-first" | "mt-first" | "compare" => self.display_mode,
             _ => default_display_mode(),
         };
+        if self.local_only {
+            self.mt_source = "offline".into();
+            self.ai_source = "ollama".into();
+        }
         self.deepl_key = self.deepl_key.trim().to_string();
         self.deepseek_key = self.deepseek_key.trim().to_string();
         self.openai_key = self.openai_key.trim().to_string();
@@ -196,9 +200,10 @@ impl Settings {
 pub fn load(dir: &Path) -> Settings {
     let path = dir.join("settings.json");
     let raw = fs::read_to_string(&path).unwrap_or_default();
-    let mut settings = serde_json::from_str::<Settings>(&raw)
-        .unwrap_or_default()
-        .normalize();
+    let parsed = serde_json::from_str::<Settings>(&raw).unwrap_or_default();
+    let local_only_engines_changed = parsed.local_only
+        && (parsed.mt_source != "offline" || parsed.ai_source != "ollama");
+    let mut settings = parsed.normalize();
     let file_had_secret = ["deeplKey", "deepseekKey", "openaiKey", "moonshotKey", "geminiKey"]
         .iter()
         .any(|name| raw.contains(&format!("\"{name}\"")));
@@ -213,7 +218,7 @@ pub fn load(dir: &Path) -> Settings {
     settings.has_openai_key = !settings.openai_key.is_empty();
     settings.has_moonshot_key = !settings.moonshot_key.is_empty();
     settings.has_gemini_key = !settings.gemini_key.is_empty();
-    if file_had_secret {
+    if file_had_secret || local_only_engines_changed {
         let _ = write_file(dir, &settings);
     }
     settings
@@ -268,6 +273,42 @@ fn write_file(dir: &Path, settings: &Settings) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn local_only_forces_offline_and_ollama_engines() {
+        let settings = Settings {
+            local_only: true,
+            mt_source: "google".into(),
+            ai_source: "deepseek".into(),
+            ..Settings::default()
+        }
+        .normalize();
+
+        assert_eq!(settings.mt_source, "offline");
+        assert_eq!(settings.ai_source, "ollama");
+    }
+
+    #[test]
+    fn loading_old_local_only_settings_persists_the_effective_engines() {
+        let dir = std::env::temp_dir().join(format!("vela-local-only-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join("settings.json"),
+            r#"{"mtSource":"google","aiSource":"deepseek","localOnly":true}"#,
+        )
+        .unwrap();
+
+        let loaded = load(&dir);
+        let raw = fs::read_to_string(dir.join("settings.json")).unwrap();
+        let persisted: Settings = serde_json::from_str(&raw).unwrap();
+
+        assert_eq!(loaded.mt_source, "offline");
+        assert_eq!(loaded.ai_source, "ollama");
+        assert_eq!(persisted.mt_source, "offline");
+        assert_eq!(persisted.ai_source, "ollama");
+        let _ = fs::remove_dir_all(dir);
+    }
 
     #[test]
     fn saved_file_does_not_contain_api_keys() {

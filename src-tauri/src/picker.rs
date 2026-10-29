@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicIsize, Ordering};
 use std::sync::OnceLock;
 use std::time::Instant;
 
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 use windows::core::w;
 use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, SIZE, WPARAM};
 use windows::Win32::Graphics::Gdi::{
@@ -27,8 +27,9 @@ use windows::Win32::UI::WindowsAndMessaging::{
     HHOOK, HWND_TOPMOST, IDC_HAND, KBDLLHOOKSTRUCT, MA_NOACTIVATE, MSG, MSLLHOOKSTRUCT,
     SWP_NOACTIVATE, SWP_SHOWWINDOW, SW_HIDE, SW_SHOWNOACTIVATE, ULW_ALPHA, UpdateLayeredWindow,
     WH_KEYBOARD_LL, WH_MOUSE_LL, WNDCLASSEXW, WM_APP, WM_DESTROY, WM_ERASEBKGND, WM_KEYUP,
-    WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEACTIVATE, WM_PAINT, WM_TIMER, WS_EX_LAYERED,
-    WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
+    WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEACTIVATE, WM_MOUSEWHEEL, WM_MOUSEHWHEEL,
+    WM_PAINT, WM_RBUTTONDOWN, WM_TIMER, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
+    WS_EX_TOPMOST, WS_POPUP,
 };
 
 const WM_PICKER_HIDE: u32 = WM_APP + 2;
@@ -62,6 +63,11 @@ thread_local! {
     static PENDING: RefCell<String> = RefCell::new(String::new());
     static ARMED: Cell<bool> = const { Cell::new(false) };
     static ARMED_TEXT: RefCell<String> = RefCell::new(String::new());
+    /// Last selection gesture metadata for prefetch diagnostics / timing.
+    static GESTURE: RefCell<String> = RefCell::new(String::new());
+    static DRAG_PX: Cell<i32> = const { Cell::new(0) };
+    static MOUSEUP_WALL_MS: Cell<u64> = const { Cell::new(0) };
+    static CLICK_STREAK: Cell<u32> = const { Cell::new(0) };
 }
 
 pub fn start(app: tauri::AppHandle) {
@@ -156,20 +162,58 @@ fn post(msg: u32) {
     }
 }
 
+fn make_prefetch_event(exe: &str) -> crate::capture::PrefetchEvent {
+    let cfg = crate::capture::prefetch_config();
+    crate::capture::PrefetchEvent {
+        mouseup_ms: MOUSEUP_WALL_MS.with(|s| s.get()),
+        gesture: GESTURE.with(|g| g.borrow().clone()),
+        drag_px: DRAG_PX.with(|s| s.get()),
+        exe: exe.to_string(),
+        phase: cfg.phase,
+        delay_ms: cfg.delay_ms,
+        budget_ms: cfg.budget_ms,
+    }
+}
+
 fn remember_show(x: i32, y: i32) {
     SHOW_X.with(|slot| slot.set(x));
     SHOW_Y.with(|slot| slot.set(y));
     PROBE_TICK.with(|slot| slot.set(slot.get().wrapping_add(1)));
+    MOUSEUP_WALL_MS.with(|s| s.set(crate::capture::prefetch_debug::now_ms()));
+
+    let exe = crate::capture::current_exe();
+    // 代码编辑器 / 终端：选区后不自动出入口，避免抢操作；用热键取词。
+    if !crate::capture::auto_show_on_selection(&exe) {
+        return;
+    }
+
+    let cfg = crate::capture::prefetch_config();
+    if cfg.enabled && crate::capture::is_electron_editor(&exe) {
+        crate::writeback::target::remember();
+        let ev = make_prefetch_event(&exe);
+        crate::capture::log_focus_stage("mouseup", &exe);
+        if matches!(cfg.phase, crate::capture::PrefetchPhase::OnMouseUp) {
+            crate::capture::start_prefetch_async(ev);
+        }
+    }
+
     let hwnd = hwnd_handle();
     if hwnd.0.is_null() {
         return;
+    }
+    let mut settle = crate::capture::selection_settle_ms(&exe);
+    if cfg.enabled
+        && crate::capture::is_electron_editor(&exe)
+        && matches!(cfg.phase, crate::capture::PrefetchPhase::BeforeBar)
+    {
+        settle = settle.max(cfg.delay_ms as u32);
     }
     unsafe {
         let _ = windows::Win32::UI::WindowsAndMessaging::KillTimer(Some(hwnd), PROBE_TIMER_ID);
         let _ = windows::Win32::UI::WindowsAndMessaging::SetTimer(
             Some(hwnd),
             PROBE_TIMER_ID,
-            PROBE_SETTLE_MS,
+            settle,
             None,
         );
     }
@@ -188,23 +232,66 @@ fn probe_and_show() {
     if PROBE_TICK.with(|slot| slot.get()) != tick {
         return;
     }
-    // Only probe with UI Automation — never touch the clipboard on a selection.
-    // If UIA can't confirm text but a selection gesture happened, still show
-    // the bar; the actual capture runs when the user clicks an action.
-    let suggested = match crate::capture::probe_uia_only() {
-        crate::capture::Outcome::Text { text, .. } => recommend(&text),
-        crate::capture::Outcome::Failed(crate::capture::CaptureError::PasswordField) => return,
-        _ => "translate".to_string(),
-    };
+    let exe = crate::capture::current_exe();
+    if !crate::capture::auto_show_on_selection(&exe) {
+        return;
+    }
     let x = SHOW_X.with(|slot| slot.get());
     let y = SHOW_Y.with(|slot| slot.get());
-    if let Some(app) = APP.get() {
-        // Record the source window now, while it is still the foreground window
-        // (the bar itself never takes focus). bar_pick will switch back to it
-        // before capturing, so UIA/copy target the app the text was selected in.
-        crate::writeback::target::remember();
-        crate::windows::show_bar(app, x, y, suggested);
+    let Some(app) = APP.get() else {
+        return;
+    };
+    crate::writeback::target::remember();
+    let cfg = crate::capture::prefetch_config();
+
+    // 默认：先出小图标，不取词；仅当显式开启预取词且是 Electron 时才静默复制。
+    if cfg.enabled && crate::capture::is_electron_editor(&exe) {
+        let ev = make_prefetch_event(&exe);
+        match cfg.phase {
+            crate::capture::PrefetchPhase::BeforeBar => {
+                let app2 = app.clone();
+                std::thread::spawn(move || {
+                    let text = crate::capture::run_prefetch_before_bar(&ev);
+                    let suggested = text
+                        .as_ref()
+                        .map(|t| recommend(t))
+                        .unwrap_or_else(|| "translate".into());
+                    crate::windows::show_bar(&app2, x, y, suggested);
+                });
+                return;
+            }
+            crate::capture::PrefetchPhase::AfterBar => {
+                crate::windows::show_bar(app, x, y, "translate".into());
+                crate::capture::start_prefetch_async(ev);
+                return;
+            }
+            crate::capture::PrefetchPhase::OnMouseUp => {
+                crate::windows::show_bar(app, x, y, "translate".into());
+                return;
+            }
+        }
     }
+
+    crate::windows::show_bar(app, x, y, "translate".into());
+    // 仅 UIA 探测推荐高亮，不碰剪贴板。
+    let app2 = app.clone();
+    let exe2 = exe;
+    std::thread::spawn(move || {
+        match crate::capture::probe_uia_only() {
+            crate::capture::Outcome::Text { text, .. } => {
+                crate::capture::selection_cache::store(text.clone(), exe2);
+                let suggested = recommend(&text);
+                let _ = app2.emit(
+                    "bar:show",
+                    serde_json::json!({ "suggested": suggested, "collapsed": true }),
+                );
+            }
+            crate::capture::Outcome::Failed(crate::capture::CaptureError::PasswordField) => {
+                crate::windows::hide_bar(&app2);
+            }
+            _ => {}
+        }
+    });
 }
 
 fn recommend(text: &str) -> String {
@@ -249,24 +336,70 @@ fn on_mouse(wparam: WPARAM, lparam: LPARAM) {
             let was_down = DOWN.with(|slot| slot.replace(false));
             let dx = x - DOWN_X.with(|slot| slot.get());
             let dy = y - DOWN_Y.with(|slot| slot.get());
-            let moved = dx.saturating_mul(dx).saturating_add(dy.saturating_mul(dy)) > 12 * 12;
+            let dist_sq = dx.saturating_mul(dx).saturating_add(dy.saturating_mul(dy));
+            let drag_px = ((dist_sq as f64).sqrt()) as i32;
+            let moved = dist_sq > 12 * 12;
             let previous = LAST_UP_MS.with(|slot| slot.get());
-            let double = now_ms().wrapping_sub(previous) < unsafe { GetDoubleClickTime() }
+            let within_dbl = now_ms().wrapping_sub(previous) < unsafe { GetDoubleClickTime() }
                 && (x - LAST_UP_X.with(|slot| slot.get())).abs() < 8
                 && (y - LAST_UP_Y.with(|slot| slot.get())).abs() < 8;
+            let streak = if within_dbl {
+                CLICK_STREAK.with(|s| {
+                    let n = s.get().saturating_add(1);
+                    s.set(n);
+                    n
+                })
+            } else {
+                CLICK_STREAK.with(|s| {
+                    s.set(1);
+                    1
+                })
+            };
+            let shift = unsafe { GetAsyncKeyState(VK_SHIFT.0 as i32) } < 0;
+            let gesture = if streak >= 3 {
+                "triple"
+            } else if streak == 2 {
+                "double"
+            } else if moved {
+                "drag"
+            } else if shift {
+                "shift_click"
+            } else {
+                "click"
+            };
+            GESTURE.with(|g| *g.borrow_mut() = gesture.into());
+            DRAG_PX.with(|s| s.set(drag_px));
             LAST_UP_MS.with(|slot| slot.set(now_ms()));
             LAST_UP_X.with(|slot| slot.set(x));
             LAST_UP_Y.with(|slot| slot.set(y));
+            let double = streak >= 2;
             if ARMED.with(|slot| slot.get()) && icon_contains(x, y, 24) {
                 post(WM_PICKER_CLICK);
-            } else if was_down && (moved || double) && !foreground_is_us() {
+            } else if was_down && (moved || double || (shift && !moved)) && !foreground_is_us()
+            {
                 clear_armed();
                 remember_show(x, y);
             } else {
                 clear_armed();
             }
         }
+        WM_RBUTTONDOWN | WM_MOUSEWHEEL | WM_MOUSEHWHEEL => {
+            // 其它操作立刻收起入口，事件原样放行（本钩子不吞）。
+            if crate::windows::bar_visible() {
+                if let Some(app) = APP.get() {
+                    crate::windows::hide_bar(app);
+                }
+            }
+        }
         _ => {}
+    }
+}
+
+fn dismiss_bar_passthrough() {
+    if crate::windows::bar_visible() {
+        if let Some(app) = APP.get() {
+            crate::windows::hide_bar(app);
+        }
     }
 }
 
@@ -275,26 +408,34 @@ fn on_key(wparam: WPARAM, lparam: LPARAM) {
         return;
     }
     let info = unsafe { &*(lparam.0 as *const KBDLLHOOKSTRUCT) };
+    // 忽略 Vela 自己注入的按键，避免预取词时误关入口。
+    if info.dwExtraInfo == crate::capture::input::VELA_TAG {
+        return;
+    }
     let vk = info.vkCode;
     let shift = unsafe { GetAsyncKeyState(VK_SHIFT.0 as i32) } < 0;
     let ctrl = unsafe { GetAsyncKeyState(VK_CONTROL.0 as i32) } < 0;
     let arrows = matches!(vk, 0x21..=0x28);
     let select_all = ctrl && vk == 0x41;
     let copying = ctrl && vk == 0x43;
+
+    // 任意按键（含 Delete）都收起入口，不拦截事件。
+    dismiss_bar_passthrough();
+    post(WM_PICKER_HIDE);
+
     if !copying && ((shift && arrows) || select_all) {
         let mut pt = POINT::default();
         if unsafe { GetCursorPos(&mut pt) }.is_ok() {
+            GESTURE.with(|g| {
+                *g.borrow_mut() = if select_all {
+                    "select_all".into()
+                } else {
+                    "shift_arrow".into()
+                }
+            });
+            DRAG_PX.with(|s| s.set(0));
             remember_show(pt.x, pt.y);
         }
-    }
-    if vk == 0x1B {
-        // Esc hides both the legacy icon and the action bar.
-        if crate::windows::bar_visible() {
-            if let Some(app) = APP.get() {
-                crate::windows::hide_bar(app);
-            }
-        }
-        post(WM_PICKER_HIDE);
     }
 }
 

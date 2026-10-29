@@ -1,40 +1,38 @@
 import { onMount } from "solid-js";
 
-// 一个译文块：用边框采样出的背景色擦除原文，再写译文。字号从行高估计，
-// 放不下就逐步缩小到 9px。Overlay 结果层和 Pinned 钉住窗口共用。
+// 译文卡片：不盖原文，放在截图附近的列表里，字号固定可读。
+
 export function OcrBlock(props) {
   const b = props.block;
+  const onSized = props.onSized;
   let elRef;
 
   onMount(() => {
-    const el = elRef;
-    const dpr = window.devicePixelRatio || 1;
-    const hCss = b.height / dpr;
-    let size = Math.max(9, Math.min(hCss * 0.8, 32));
-    el.style.fontSize = `${size}px`;
-    // 逐步缩小，直到译文放进原文矩形，或到达最小 9px。
-    while (size > 9 && el.scrollHeight > el.clientHeight + 1) {
-      size -= 1;
-      el.style.fontSize = `${size}px`;
-    }
+    requestAnimationFrame(() => {
+      if (typeof onSized === "function") onSized();
+    });
   });
 
-  const dpr = () => window.devicePixelRatio || 1;
+  return (
+    <div ref={elRef} class="ocr-card">
+      <div class="ocr-card-dst">{b.translated}</div>
+    </div>
+  );
+}
 
+/** 原文位置的细线框，不遮挡文字。 */
+export function OcrOutline(props) {
+  const b = props.block;
+  const dpr = () => window.devicePixelRatio || 1;
   return (
     <div
-      ref={elRef}
-      class="ocr-block"
+      class="ocr-outline"
       style={{
         left: `${b.x / dpr()}px`,
         top: `${b.y / dpr()}px`,
-        width: `${b.width / dpr()}px`,
-        height: `${b.height / dpr()}px`,
-        "background-color": b.solidBg ? b.bgColor : `${b.bgColor}d9`,
-        color: b.textColor,
+        width: `${Math.max(b.width / dpr(), 4)}px`,
+        height: `${Math.max(b.height / dpr(), 4)}px`,
       }}
-    >
-      {b.translated}
-    </div>
+    />
   );
 }

@@ -6,9 +6,27 @@
   overflow: hidden;
 }
 
-.overlay-canvas {
+.overlay-canvas,
+.overlay-img {
   display: block;
-  image-rendering: pixelated;
+  width: 100%;
+  height: auto;
+  user-select: none;
+  -webkit-user-drag: none;
+  pointer-events: none;
+}
+
+.overlay-img {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100vw;
+  height: 100vh;
+  object-fit: fill;
+}
+
+.overlay-root.busy {
+  cursor: wait;
 }
 
 .overlay-sel {
@@ -32,38 +50,126 @@
   white-space: nowrap;
 }
 
-/* 结果层：鼠标不再框选。 */
+/* 结果层：顶栏 + 原图 + 下方译文，不盖原文。 */
 .overlay-root.result {
   cursor: default;
+  overflow: visible;
+  background: rgba(18, 18, 22, 0.55);
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
 }
 
-/* 译文块：背景色擦除原文，文字盖回原位。 */
-.ocr-block {
-  position: absolute;
-  box-sizing: border-box;
-  overflow: hidden;
-  padding: 0 2px;
-  line-height: 1.2;
-  text-align: left;
-  word-break: break-word;
-  white-space: normal;
+.ocr-chrome {
+  flex: 0 0 36px;
   display: flex;
   align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 0 8px;
+  background: rgba(20, 20, 24, 0.94);
+  z-index: 20;
+}
+
+.ocr-chrome-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.ocr-body {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  background: #f4f5f8;
+}
+
+/* 默认：截图左侧，译文右侧（更常见、更好读）。 */
+.ocr-body.side {
+  flex-direction: row;
+  align-items: stretch;
+}
+
+.ocr-body.side .ocr-cards {
+  flex: 1 1 auto;
+  max-height: 100%;
+  overflow-y: auto;
+  border-left: 1px solid rgba(0, 0, 0, 0.06);
+}
+
+.ocr-shot {
+  position: relative;
+  flex: 0 0 auto;
+  background: #111;
+  overflow: hidden;
+}
+
+.overlay-img-result {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: fill;
+  user-select: none;
+  -webkit-user-drag: none;
   pointer-events: none;
 }
 
-/* 结果层工具栏：钉住 / 关闭。 */
-.ocr-toolbar {
-  position: fixed;
-  top: 8px;
-  right: 8px;
+/* 原文位置细框：标出识别区，不遮字。 */
+.ocr-outline {
+  position: absolute;
+  box-sizing: border-box;
+  border: 1.5px solid rgba(47, 91, 234, 0.85);
+  border-radius: 2px;
+  pointer-events: none;
+  background: transparent;
+}
+
+.ocr-cards {
   display: flex;
-  gap: 6px;
-  z-index: 10;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  background: #f4f5f8;
+}
+
+.ocr-card {
+  background: #fff;
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  border-radius: 8px;
+  padding: 8px 10px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
+}
+
+.ocr-card-dst {
+  font-size: 16px;
+  line-height: 1.45;
+  font-weight: 600;
+  color: #1b1b1f;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.ocr-engine-badge {
+  background: rgba(255, 255, 255, 0.1);
+  color: #fff;
+  border-radius: 6px;
+  padding: 5px 10px;
+  font-size: 12px;
+  line-height: 1;
+  white-space: nowrap;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 55%;
+}
+
+.pinned-engine {
+  flex: 0 1 auto;
+  max-width: 36%;
 }
 
 .ocr-tool-btn {
-  background: rgba(20, 20, 24, 0.78);
+  background: rgba(255, 255, 255, 0.12);
   color: #fff;
   border: none;
   border-radius: 6px;
@@ -77,39 +183,62 @@
   background: rgba(47, 91, 234, 0.85);
 }
 
-/* 钉住窗口：内容 + 悬浮工具栏。 */
+.ocr-close {
+  position: fixed;
+  top: 8px;
+  right: 8px;
+  z-index: 10;
+}
+
+/* 钉住窗口 */
 .pinned-root {
   position: fixed;
   inset: 0;
   overflow: hidden;
   background: transparent;
+  display: flex;
+  flex-direction: column;
+  cursor: grab;
 }
 
-.pinned-stage {
-  position: absolute;
-  top: 0;
-  left: 0;
+.pinned-root:active {
+  cursor: grabbing;
 }
 
 .pinned-toolbar {
-  position: fixed;
-  bottom: 8px;
-  left: 50%;
-  transform: translateX(-50%);
+  position: relative;
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  background: rgba(20, 20, 24, 0.94);
+  padding: 3px 6px;
+  z-index: 20;
+  user-select: none;
+  min-height: 28px;
+}
+
+.pinned-drag-hint {
+  color: rgba(255, 255, 255, 0.55);
+  font-size: 11px;
+  padding: 2px 6px;
+  cursor: grab;
+}
+
+.pinned-controls {
   display: flex;
   align-items: center;
   gap: 6px;
-  background: rgba(20, 20, 24, 0.82);
-  border-radius: 8px;
-  padding: 4px 8px;
-  z-index: 10;
+  flex: 0 0 auto;
+  margin-left: auto;
+  cursor: default;
 }
 
-.pinned-drag {
-  flex: 1;
-  min-width: 48px;
-  height: 22px;
-  cursor: move;
+.pinned-body {
+  position: relative;
+  flex: 0 0 auto;
+  background: #f4f5f8;
+  overflow: visible;
 }
 
 .pinned-btn {
@@ -117,7 +246,7 @@
   color: #fff;
   border: 1px solid rgba(255, 255, 255, 0.22);
   border-radius: 5px;
-  padding: 3px 8px;
+  padding: 4px 9px;
   font-size: 12px;
   cursor: pointer;
   line-height: 1;
@@ -131,6 +260,11 @@
 .pinned-btn.on {
   background: rgba(47, 91, 234, 0.85);
   border-color: transparent;
+}
+
+.pinned-close {
+  font-size: 16px;
+  padding: 2px 10px;
 }
 
 .pinned-scale {

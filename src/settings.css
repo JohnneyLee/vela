@@ -97,6 +97,53 @@
   color: var(--ac);
 }
 
+.update-row {
+  margin-top: 8px;
+}
+
+.secondary-btn {
+  padding: 5px 12px;
+  font: inherit;
+  color: var(--tx);
+  background: var(--cd);
+  border: 1px solid var(--ln);
+  border-radius: var(--radius-btn);
+  cursor: pointer;
+}
+
+.secondary-btn:disabled,
+.primary-btn:disabled {
+  cursor: wait;
+  opacity: 0.65;
+}
+
+.update-available {
+  margin: 4px 0 8px;
+  padding: 10px 12px;
+  background: var(--cd);
+  border: 1px solid var(--ln);
+  border-radius: var(--radius-pop);
+}
+
+.update-available p {
+  margin: 0 0 6px;
+  font-weight: 600;
+}
+
+.update-available pre {
+  max-height: 180px;
+  overflow: auto;
+  white-space: pre-wrap;
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--mu);
+}
+
+.update-message {
+  overflow-wrap: anywhere;
+}
+
 /* —— 当前服务详情卡片 —— */
 .engine-panel {
   margin: 8px 0;

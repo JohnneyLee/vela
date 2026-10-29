@@ -28,11 +28,6 @@ impl Drop for ActiveCapture {
 /// open when contention was detected (empty otherwise).
 pub fn log_capture(exe: &str, via: &str, result: &str, ms: u128, holder: &str) {
     let running = ACTIVE_CAPTURES.load(Ordering::SeqCst);
-    let dir = log_dir();
-    if std::fs::create_dir_all(&dir).is_err() {
-        return;
-    }
-    let path = dir.join(format!("capture-{}.log", date_str()));
     let mut line = format!(
         "{} exe={} via={} result={} ms={} running={}",
         timestamp(),
@@ -45,6 +40,20 @@ pub fn log_capture(exe: &str, via: &str, result: &str, ms: u128, holder: &str) {
     if !holder.is_empty() {
         line.push_str(&format!(" holder={holder}"));
     }
+    append_line(&line);
+}
+
+/// Free-form diagnostic line (prefetch timings, focus snapshots). Never pass text content.
+pub fn log_diag(line: &str) {
+    append_line(&format!("{} {line}", timestamp()));
+}
+
+fn append_line(line: &str) {
+    let dir = log_dir();
+    if std::fs::create_dir_all(&dir).is_err() {
+        return;
+    }
+    let path = dir.join(format!("capture-{}.log", date_str()));
     if let Ok(mut file) = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
