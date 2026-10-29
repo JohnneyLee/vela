@@ -1,6 +1,6 @@
 # Vela
 
-Windows 划词翻译工具。选中文字后，窗口贴在光标旁边，翻译、解释、润色或朗读，看完即关，不记住译文。
+Windows跨窗口划词翻译工具。选中文字后，窗口贴在光标旁边，翻译、解释、润色或朗读，看完即关，不记住译文。
 
 Vela is a Windows selection translator. Select text and a small window appears next to the cursor to translate, explain, polish, or read it aloud. It closes when you are done and does not remember the result.
 
